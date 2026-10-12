@@ -1,0 +1,10 @@
+# ROCm-PyTorch se instala aparte con el índice de ROCm (https://pytorch.org/get-started/locally/)
+numpy
+pandas
+scikit-learn
+xgboost
+lightgbm
+onnx
+onnxruntime
+pyyaml
+pytest

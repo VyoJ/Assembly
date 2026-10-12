@@ -1,0 +1,8 @@
+modality: image
+task: anomaly_detection
+model: mobilenet_v3
+epochs: 10
+batch_size: 32
+lr: 0.001
+extra:
+  category: pcb1
