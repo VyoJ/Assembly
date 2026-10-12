@@ -1,0 +1,23 @@
+{
+  "id": "press_rul",
+  "name": "Press remaining useful life",
+  "rationale": "Knowing how many cycles a press has left lets maintenance be scheduled before it stops the line.",
+  "framing": "Regression: remaining cycles until failure for each press unit at each cycle, from its sensor history.",
+  "input_streams": [
+    "press3.lpc_outlet_temp", "press3.hpc_outlet_temp", "press3.lpt_outlet_temp", "press3.hpc_outlet_pressure",
+    "press3.fan_speed", "press3.core_speed", "press3.hpc_static_pressure", "press3.fuel_flow_ratio",
+    "press3.corrected_fan_speed", "press3.corrected_core_speed", "press3.bypass_ratio", "press3.bleed_enthalpy",
+    "press3.hpt_coolant_bleed", "press3.lpt_coolant_bleed"
+  ],
+  "label_sources": ["maintenance_log"],
+  "target_definition": "RUL = failure_cycle - current_cycle, clipped at 125",
+  "prediction_format": "scalar",
+  "primary_metric": "rmse",
+  "metrics": ["rmse", "mae", "nasa_score", "early_warning_recall", "early_warning_far", "p95_latency_ms"],
+  "kpis": [
+    {"metric": "rmse", "op": "<=", "threshold": 18.0},
+    {"metric": "early_warning_far", "op": "<=", "threshold": 0.05}
+  ],
+  "split_strategy": "by press unit (70/15/15)",
+  "time_budget_s": 180
+}

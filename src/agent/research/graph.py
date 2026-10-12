@@ -1,0 +1,134 @@
+"""Research subgraph (the autoresearch loop):
+propose -> run -> [fix -> run]* -> check_stop -> propose ... -> END
+"""
+
+import asyncio
+import time
+
+from langgraph.graph import END, START, StateGraph
+
+from agent import llm, mock_llm, prompts
+from agent.research import judge
+from agent.research.edits import EditError, apply_edits, parse_proposal
+from agent.state import ResearchState
+from agent.tools import RECIPES_DIR, research_tools
+from core.config import settings
+from core.contracts import ExperimentResult
+from core.events import bus
+from ml import api as ml_api
+from ml import workspace as ws_files
+
+
+def _summarize(r: ExperimentResult | None) -> str:
+    if r is None:
+        return "(none yet)"
+    metrics = ", ".join(f"{k}={v:.4g}" for k, v in r.metrics.items())
+    return (f"{r.exp_id} [{r.status}] score={r.score} | {r.description}\nmetrics: {metrics or '-'}\n"
+            f"kpis: {r.kpis_passed or '-'}\nlog tail:\n{r.log_tail[-1500:]}")
+
+
+async def propose(state: ResearchState) -> dict:
+    ws, run_id = state["ws"], state["run_id"]
+    best_code = ws_files.best_train_py(ws)
+    exp_id = ws_files.next_exp_id(ws)
+    user = prompts.RESEARCH_USER.format(
+        spec=ws.spec.model_dump_json(indent=2),
+        data_card=ml_api.read_workspace_file(ws, "data_card.md"),
+        recipes=(RECIPES_DIR / "INDEX.md").read_text(),
+        best_code=f"```python\n{best_code}```" if best_code else "(none yet: write experiment 0 from scratch as a full ```python block)",
+        results=ws_files.results_tail(ws, settings.results_context_rows),
+        last=_summarize(state.get("last")),
+        feedback=f"# Problem with your previous answer\n{state['feedback']}\n" if state.get("feedback") else "",
+        exp_id=exp_id,
+    )
+    reply = await llm.text(
+        llm.messages(ml_api.read_workspace_file(ws, "program.md"), user),
+        mock=lambda: mock_llm.propose(best_code, exp_id),
+        tools=research_tools(ws),
+        on_tool_call=lambda name, args: bus.emit(run_id, "tool_call", task_id=ws.task_id, tool=name, args=args),
+    )
+    try:
+        proposal = parse_proposal(reply)
+        code = apply_edits(best_code, proposal.edits)
+    except EditError as e:
+        bus.emit(run_id, "proposal_invalid", task_id=ws.task_id, error=str(e))
+        return {"pending_code": None, "feedback": str(e), "bad_proposals": state.get("bad_proposals", 0) + 1}
+    bus.emit(run_id, "proposal", task_id=ws.task_id, exp_id=exp_id,
+             hypothesis=proposal.hypothesis, description=proposal.description)
+    return {"pending_code": code, "feedback": "", "fix_attempts": 0,
+            "pending_meta": {"hypothesis": proposal.hypothesis, "description": proposal.description}}
+
+
+async def run(state: ResearchState) -> dict:
+    ws, run_id = state["ws"], state["run_id"]
+
+    def progress(p: dict) -> None:
+        bus.emit(run_id, "progress", task_id=ws.task_id, **p)
+
+    result = await asyncio.to_thread(ml_api.run_experiment, ws, state["pending_code"], state["pending_meta"], progress)
+    bus.emit(run_id, "experiment", **result.model_dump())
+    return {"last": result, "best": ws_files.best_result(ws), "n_exp": state.get("n_exp", 0) + 1, "pending_code": None}
+
+
+async def fix(state: ResearchState) -> dict:
+    ws, last = state["ws"], state["last"]
+    failing = ws_files.read_file(ws, f"{last.exp_id}/train.py")
+    reply = await llm.text(
+        llm.messages(prompts.FIX_SYSTEM, prompts.FIX_USER.format(code=failing, status=last.status, log_tail=last.log_tail[-3000:])),
+        mock=lambda: mock_llm.fix(failing),
+    )
+    attempts = state.get("fix_attempts", 0) + 1
+    try:
+        proposal = parse_proposal(reply)
+        code = apply_edits(failing, proposal.edits)
+    except EditError as e:
+        bus.emit(state["run_id"], "proposal_invalid", task_id=ws.task_id, error=f"fix: {e}")
+        return {"fix_attempts": settings.max_fix_attempts, "pending_code": None}
+    bus.emit(state["run_id"], "fix", task_id=ws.task_id, of=last.exp_id, description=proposal.description)
+    meta = {"hypothesis": last.hypothesis, "description": f"fix({last.exp_id}): {proposal.description}"}
+    return {"pending_code": code, "pending_meta": meta, "fix_attempts": attempts}
+
+
+async def check_stop(state: ResearchState) -> dict:
+    reason = judge.stop_reason(state)
+    if reason:
+        bus.emit(state["run_id"], "research_done", task_id=state["ws"].task_id, reason=reason,
+                 best=state["best"].model_dump() if state.get("best") else None, n_exp=state.get("n_exp", 0))
+    return {"stop_reason": reason}
+
+
+def after_propose(state: ResearchState) -> str:
+    return "run" if state.get("pending_code") else "check_stop"
+
+
+def after_run(state: ResearchState) -> str:
+    return "fix" if judge.needs_fix(state) else "check_stop"
+
+
+def after_fix(state: ResearchState) -> str:
+    return "run" if state.get("pending_code") else "check_stop"
+
+
+def after_check(state: ResearchState) -> str:
+    return END if state.get("stop_reason") else "propose"
+
+
+def build_research_graph():
+    g = StateGraph(ResearchState)
+    for name, fn in [("propose", propose), ("run", run), ("fix", fix), ("check_stop", check_stop)]:
+        g.add_node(name, fn)
+    g.add_edge(START, "propose")
+    g.add_conditional_edges("propose", after_propose, ["run", "check_stop"])
+    g.add_conditional_edges("run", after_run, ["fix", "check_stop"])
+    g.add_conditional_edges("fix", after_fix, ["run", "check_stop"])
+    g.add_conditional_edges("check_stop", after_check, ["propose", END])
+    return g.compile()
+
+
+research_graph = build_research_graph()
+
+
+async def run_research(run_id: str, ws) -> ResearchState:
+    init: ResearchState = {"run_id": run_id, "ws": ws, "started_at": time.time(), "n_exp": 0,
+                           "best": ws_files.best_result(ws), "last": None}
+    return await research_graph.ainvoke(init, config={"recursion_limit": 10_000})
