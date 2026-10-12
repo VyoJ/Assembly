@@ -1,4 +1,4 @@
-"""Export a ONNX (PyTorch / XGBoost). MIGraphX queda fuera: lo decide el equipo."""
+"""Export a ONNX (PyTorch / XGBoost). MIGraphX is out of scope: the team decides."""
 from __future__ import annotations
 
 

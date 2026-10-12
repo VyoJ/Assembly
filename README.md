@@ -1,13 +1,13 @@
 # Assembly / ForgeAgent
 
-Agente autónomo que ingiere datos industriales, entrena modelos sobre AMD ROCm,
-los exporta a ONNX y los despliega. Ver `docs/`.
+Autonomous agent that ingests industrial data, trains models on AMD ROCm,
+exports them to ONNX and deploys them. See `docs/`.
 
-- `training/`      : entrenamiento y export (rama `training`)
-- `orchestration/` : agente/LLM que llama a las tools de training (otra persona)
-- `docs/datasets.md` : datasets de ejemplo
+- `training/`      : training and export (`training` branch)
+- `orchestration/` : agent/LLM that calls the training tools (other teammate)
+- `docs/datasets.md` : example datasets
 
-## Contrato training <-> orchestration
+## training <-> orchestration contract
 
 ```python
 from training import train_model, capabilities, TrainConfig
@@ -18,5 +18,5 @@ result = train_model("data/cwru", cfg)
 result.to_dict()  # JSON: status, model_path, onnx_path, metrics, device, gpu_stats, log, error
 ```
 
-`train_model` nunca lanza hacia el agente: devuelve `TrainResult` con
-`status="error"` y `error` legible si algo falla.
+`train_model` never raises towards the agent: it returns a `TrainResult` with
+`status="error"` and a readable `error` if something fails.

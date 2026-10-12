@@ -1,1 +1,1 @@
-"""Descarga datasets a data/. Ver docs/datasets.md. TODO."""
+"""Download datasets into data/. See docs/datasets.md. TODO."""

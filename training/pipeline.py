@@ -1,4 +1,4 @@
-"""Pipeline genérico: loader(modalidad) -> modelo(modalidad/tarea) -> fit -> eval -> export."""
+"""Generic pipeline: loader(modality) -> model(modality/task) -> fit -> eval -> export."""
 from __future__ import annotations
 
 from .registry import get_loader, get_model
@@ -11,4 +11,4 @@ def run(data_path: str, config: TrainConfig) -> TrainResult:
     # TODO: dataset = loader(data_path, config); model = build_model(config)
     #       model.fit(dataset); metrics = model.evaluate(dataset)
     #       if config.export_onnx: export_onnx(...)
-    raise NotImplementedError("pipeline pendiente")
+    raise NotImplementedError("pipeline not implemented yet")

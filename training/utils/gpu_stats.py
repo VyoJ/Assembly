@@ -1,4 +1,4 @@
-"""Snapshot de GPU vía amd-smi para los logs de ejecución."""
+"""GPU snapshot via amd-smi for the run logs."""
 from __future__ import annotations
 
 import json

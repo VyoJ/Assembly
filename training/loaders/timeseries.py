@@ -1,4 +1,4 @@
-"""Series temporales: ventaneo + features (CWRU .mat, MAFAULDA .csv). TODO."""
+"""Time series: windowing + features (CWRU .mat, MAFAULDA .csv). TODO."""
 from ..registry import register_loader
 
 

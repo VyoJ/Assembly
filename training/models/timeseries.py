@@ -1,4 +1,4 @@
-"""Modelos para señales. TODO."""
+"""Models for signals. TODO."""
 from ..registry import register_model
 
 

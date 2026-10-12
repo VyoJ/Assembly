@@ -1,4 +1,4 @@
-"""Audio -> espectrogramas (MIMII). TODO."""
+"""Audio -> spectrograms (MIMII). TODO."""
 from ..registry import register_loader
 
 

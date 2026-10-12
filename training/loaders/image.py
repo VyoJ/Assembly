@@ -1,4 +1,4 @@
-"""Imágenes (MVTec AD, frames de cámara). TODO."""
+"""Images (MVTec AD, camera frames). TODO."""
 from ..registry import register_loader
 
 

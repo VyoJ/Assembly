@@ -1,4 +1,4 @@
-"""Modelos de visión sobre backbone preentrenado. TODO."""
+"""Vision models on a pretrained backbone. TODO."""
 from ..registry import register_model
 
 

@@ -9,7 +9,7 @@ def test_errors_are_returned_not_raised():
 
 def test_unsupported_combo_is_readable():
     r = train_model("x", TrainConfig(modality="video", task="regression"))
-    assert r.status == "error" and "no soportada" in r.error
+    assert r.status == "error" and "unsupported" in r.error
 
 
 def test_capabilities_lists_registered_pieces():

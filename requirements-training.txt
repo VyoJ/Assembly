@@ -1,4 +1,4 @@
-# ROCm-PyTorch se instala aparte con el índice de ROCm (https://pytorch.org/get-started/locally/)
+# ROCm-PyTorch is installed separately with the ROCm index (https://pytorch.org/get-started/locally/)
 numpy
 pandas
 scikit-learn

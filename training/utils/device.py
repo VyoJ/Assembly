@@ -1,9 +1,9 @@
-"""Detección de dispositivo. En ROCm-PyTorch la GPU AMD aparece como 'cuda'."""
+"""Device detection. In ROCm-PyTorch the AMD GPU shows up as 'cuda'."""
 from __future__ import annotations
 
 
 def get_device() -> tuple[str, str]:
-    """Devuelve (torch_device, etiqueta legible)."""
+    """Returns (torch_device, human-readable label)."""
     import torch
 
     if torch.cuda.is_available():
