@@ -1,155 +1,221 @@
-# Plant catalog for the demo: 'Press Line 3'.
+# Plant catalog for the demo: 'Press Line 3' (+ a motor on Line 4).
 # Streams and label sources the agent can discover and build tasks from.
-# source: <dataset>:<subset>:<column>, resolved by ml/catalog.py.
-# mock_hint: only used by ml/mock.py; real profiling computes relevance from data.
+#
+# `sources` says how raw data is laid out on disk, by KIND (not by dataset), so adding a dataset
+# is a config entry. Kinds handled by ml/catalog.py:
+#   table         CSV / parquet / whitespace text with an entity column and a time column
+#   signal        one high-frequency waveform file per record (.mat / .wav / .npy / .csv)
+#   image_folder  image files (+ optional annotations / masks)
+#   video         video files, read frame by frame as an image stream
+#   synthetic     generated distractors on the grid of a table source
+# Stream / label `source`: <source_id>:<field>. mock_hint: only used by ml/mock.py.
+
+sources:
+  cmapss_fd001:
+    kind: table
+    description: NASA C-MAPSS FD001 run-to-failure trajectories (simulated), relabelled as Press 3.
+    path: cmapss/train_FD001.txt
+    format: whitespace
+    columns: [unit, cycle, op1, op2, op3, s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s15, s16, s17, s18, s19, s20, s21]
+    entity: unit
+    time: cycle
+  cwru_12k:
+    kind: signal
+    description: CWRU bearing data, drive-end faults of 0.007 in, motor loads 0-3 hp, relabelled as Motor 4.
+    path: cwru
+    format: mat
+    channels: {DE: _DE_time, FE: _FE_time}
+    entity: motor4
+    label_fields: [fault, fault_size_in]   # only in read_labels, never in the stream itself
+    records:
+      - {file: 97.mat, fault: normal, fault_size_in: 0.0, load_hp: 0, rpm: 1797, sample_hz: 48000}
+      - {file: 98.mat, fault: normal, fault_size_in: 0.0, load_hp: 1, rpm: 1772, sample_hz: 48000}
+      - {file: 99.mat, fault: normal, fault_size_in: 0.0, load_hp: 2, rpm: 1750, sample_hz: 48000}
+      - {file: 100.mat, fault: normal, fault_size_in: 0.0, load_hp: 3, rpm: 1730, sample_hz: 48000}
+      - {file: 105.mat, fault: inner_race, fault_size_in: 0.007, load_hp: 0, rpm: 1797, sample_hz: 12000}
+      - {file: 106.mat, fault: inner_race, fault_size_in: 0.007, load_hp: 1, rpm: 1772, sample_hz: 12000}
+      - {file: 107.mat, fault: inner_race, fault_size_in: 0.007, load_hp: 2, rpm: 1750, sample_hz: 12000}
+      - {file: 108.mat, fault: inner_race, fault_size_in: 0.007, load_hp: 3, rpm: 1730, sample_hz: 12000}
+      - {file: 118.mat, fault: ball, fault_size_in: 0.007, load_hp: 0, rpm: 1797, sample_hz: 12000}
+      - {file: 119.mat, fault: ball, fault_size_in: 0.007, load_hp: 1, rpm: 1772, sample_hz: 12000}
+      - {file: 120.mat, fault: ball, fault_size_in: 0.007, load_hp: 2, rpm: 1750, sample_hz: 12000}
+      - {file: 121.mat, fault: ball, fault_size_in: 0.007, load_hp: 3, rpm: 1730, sample_hz: 12000}
+      - {file: 130.mat, fault: outer_race, fault_size_in: 0.007, load_hp: 0, rpm: 1797, sample_hz: 12000}
+      - {file: 131.mat, fault: outer_race, fault_size_in: 0.007, load_hp: 1, rpm: 1772, sample_hz: 12000}
+      - {file: 132.mat, fault: outer_race, fault_size_in: 0.007, load_hp: 2, rpm: 1750, sample_hz: 12000}
+      - {file: 133.mat, fault: outer_race, fault_size_in: 0.007, load_hp: 3, rpm: 1730, sample_hz: 12000}
+  mvtec_metal_nut:
+    kind: image_folder
+    description: MVTec AD metal_nut images (train = good only; test = good + 4 defect types) with pixel masks.
+    path: mvtec/metal_nut
+    layout: mvtec
+  synthetic:
+    kind: synthetic
+    description: Generated distractors with no relation to failures.
+    grid: cmapss_fd001
 
 streams:
   - id: press3.fan_inlet_temp
     name: Press 3 fan inlet temp
     modality: temperature
     unit: degR
-    source: cmapss:FD001:s1
+    source: cmapss_fd001:s1
     sample_hz: 1.0
     mock_hint: constant
   - id: press3.lpc_outlet_temp
     name: Press 3 lpc outlet temp
     modality: temperature
     unit: degR
-    source: cmapss:FD001:s2
+    source: cmapss_fd001:s2
     sample_hz: 1.0
   - id: press3.hpc_outlet_temp
     name: Press 3 hpc outlet temp
     modality: temperature
     unit: degR
-    source: cmapss:FD001:s3
+    source: cmapss_fd001:s3
     sample_hz: 1.0
   - id: press3.lpt_outlet_temp
     name: Press 3 lpt outlet temp
     modality: temperature
     unit: degR
-    source: cmapss:FD001:s4
+    source: cmapss_fd001:s4
     sample_hz: 1.0
   - id: press3.fan_inlet_pressure
     name: Press 3 fan inlet pressure
     modality: pressure
     unit: psia
-    source: cmapss:FD001:s5
+    source: cmapss_fd001:s5
     sample_hz: 1.0
     mock_hint: constant
   - id: press3.bypass_duct_pressure
     name: Press 3 bypass duct pressure
     modality: pressure
     unit: psia
-    source: cmapss:FD001:s6
+    source: cmapss_fd001:s6
     sample_hz: 1.0
     mock_hint: constant
   - id: press3.hpc_outlet_pressure
     name: Press 3 hpc outlet pressure
     modality: pressure
     unit: psia
-    source: cmapss:FD001:s7
+    source: cmapss_fd001:s7
     sample_hz: 1.0
   - id: press3.fan_speed
     name: Press 3 fan speed
     modality: plc
     unit: rpm
-    source: cmapss:FD001:s8
+    source: cmapss_fd001:s8
     sample_hz: 1.0
   - id: press3.core_speed
     name: Press 3 core speed
     modality: plc
     unit: rpm
-    source: cmapss:FD001:s9
+    source: cmapss_fd001:s9
     sample_hz: 1.0
   - id: press3.engine_pressure_ratio
     name: Press 3 engine pressure ratio
     modality: pressure
-    source: cmapss:FD001:s10
+    source: cmapss_fd001:s10
     sample_hz: 1.0
     mock_hint: constant
   - id: press3.hpc_static_pressure
     name: Press 3 hpc static pressure
     modality: pressure
     unit: psia
-    source: cmapss:FD001:s11
+    source: cmapss_fd001:s11
     sample_hz: 1.0
   - id: press3.fuel_flow_ratio
     name: Press 3 fuel flow ratio
     modality: plc
-    source: cmapss:FD001:s12
+    source: cmapss_fd001:s12
     sample_hz: 1.0
   - id: press3.corrected_fan_speed
     name: Press 3 corrected fan speed
     modality: plc
     unit: rpm
-    source: cmapss:FD001:s13
+    source: cmapss_fd001:s13
     sample_hz: 1.0
   - id: press3.corrected_core_speed
     name: Press 3 corrected core speed
     modality: plc
     unit: rpm
-    source: cmapss:FD001:s14
+    source: cmapss_fd001:s14
     sample_hz: 1.0
   - id: press3.bypass_ratio
     name: Press 3 bypass ratio
     modality: plc
-    source: cmapss:FD001:s15
+    source: cmapss_fd001:s15
     sample_hz: 1.0
   - id: press3.burner_fuel_air_ratio
     name: Press 3 burner fuel air ratio
     modality: plc
-    source: cmapss:FD001:s16
+    source: cmapss_fd001:s16
     sample_hz: 1.0
     mock_hint: constant
   - id: press3.bleed_enthalpy
     name: Press 3 bleed enthalpy
     modality: other
-    source: cmapss:FD001:s17
+    source: cmapss_fd001:s17
     sample_hz: 1.0
   - id: press3.demanded_fan_speed
     name: Press 3 demanded fan speed
     modality: plc
     unit: rpm
-    source: cmapss:FD001:s18
+    source: cmapss_fd001:s18
     sample_hz: 1.0
     mock_hint: constant
   - id: press3.demanded_corrected_fan_speed
     name: Press 3 demanded corrected fan speed
     modality: plc
     unit: rpm
-    source: cmapss:FD001:s19
+    source: cmapss_fd001:s19
     sample_hz: 1.0
     mock_hint: constant
   - id: press3.hpt_coolant_bleed
     name: Press 3 hpt coolant bleed
     modality: vibration
-    source: cmapss:FD001:s20
+    source: cmapss_fd001:s20
     sample_hz: 1.0
   - id: press3.lpt_coolant_bleed
     name: Press 3 lpt coolant bleed
     modality: vibration
-    source: cmapss:FD001:s21
+    source: cmapss_fd001:s21
     sample_hz: 1.0
   - id: press3.op_setting_1
     name: Press 3 operating setting 1
     modality: plc
-    source: cmapss:FD001:op1
+    source: cmapss_fd001:op1
     sample_hz: 1.0
   - id: press3.op_setting_2
     name: Press 3 operating setting 2
     modality: plc
-    source: cmapss:FD001:op2
+    source: cmapss_fd001:op2
     sample_hz: 1.0
   - id: press3.op_setting_3
     name: Press 3 operating setting 3
     modality: plc
-    source: cmapss:FD001:op3
+    source: cmapss_fd001:op3
     sample_hz: 1.0
   - id: line3.cam_top
     name: Line 3 top camera (parts after pressing)
     modality: image
-    source: mvtec:metal_nut:images
+    source: mvtec_metal_nut:images
     description: One image per part leaving the press.
+  # Line 4 motor: raw high-frequency vibration (one recording per record, not a per-cycle table).
+  - id: motor4.vibration_drive_end
+    name: Motor 4 drive-end accelerometer
+    modality: vibration
+    unit: g
+    source: cwru_12k:DE
+    sample_hz: 12000
+    description: Raw vibration waveform, one ~10 s recording per operating condition (normal records at 48 kHz).
+  - id: motor4.vibration_fan_end
+    name: Motor 4 fan-end accelerometer
+    modality: vibration
+    unit: g
+    source: cwru_12k:FE
+    sample_hz: 12000
+    description: Raw vibration waveform, one ~10 s recording per operating condition (normal records at 48 kHz).
   # Distractors: discovery should reject these.
   - id: hvac.ambient_temp
     name: Hall HVAC ambient temperature
@@ -177,9 +243,14 @@ label_sources:
     name: Maintenance log
     description: One row per press unit with the cycle at which it failed (run-to-failure).
     kind: events
-    source: cmapss:FD001:failures
+    source: cmapss_fd001:last_time
   - id: qc_inspections
     name: QC inspections
     description: Per-image inspection result for line3.cam_top - defect type and pixel mask (boxes derivable); 'good' if no defect.
     kind: annotations
-    source: mvtec:metal_nut:ground_truth
+    source: mvtec_metal_nut:annotations
+  - id: bearing_inspections
+    name: Bearing inspections
+    description: Per recording of Motor 4 - bearing condition (normal, inner_race, ball, outer_race), fault size, motor load and speed.
+    kind: annotations
+    source: cwru_12k:records

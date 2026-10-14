@@ -1,7 +1,8 @@
 """Harness: copied READ-ONLY into every task workspace. The only API agent code uses for data I/O.
 
 prepare.py side:  catalog(), read_stream(), read_streams(), read_labels(), write_dataset()
-train.py side:    task(), load_train(), load_val_inputs(), load_test_inputs(),
+both:             load_signal(), load_image()
+train.py side:    task(), load_train(), load_val_inputs(), load_test_inputs(), ids(), groups(),
                   time_left(), device(), weights(), save_model(), finish()
 
 Configured by env vars set by ml/runner.py (see its docstring).
@@ -51,7 +52,8 @@ def catalog() -> dict:
 
 
 def read_stream(stream_id: str):
-    """Sensor stream -> DataFrame(unit, cycle, <stream_id>). Several at once: read_streams([...])."""
+    """The stream as a DataFrame. Table streams: (entity, time, <stream_id>).
+    Signal / image streams: one row per recording or image with a `path` (see load_signal / load_image)."""
     from ml.catalog import read_stream as _read
 
     _allowed(stream_id)
@@ -59,7 +61,7 @@ def read_stream(stream_id: str):
 
 
 def read_streams(stream_ids: list[str]):
-    """Several sensor streams joined on (unit, cycle): one wide DataFrame."""
+    """Several table streams joined on (entity, time) into one wide DataFrame."""
     from ml.catalog import read_streams as _read
 
     for sid in stream_ids:
@@ -68,55 +70,124 @@ def read_streams(stream_ids: list[str]):
 
 
 def read_labels(label_source_id: str):
-    """maintenance_log -> DataFrame(unit, failure_cycle)."""
+    """events -> DataFrame(entity, event_time); annotations -> DataFrame(record_id, <labels>...)."""
     from ml.catalog import read_labels as _read
 
     _allowed(label_source_id)
     return _read(label_source_id)
 
 
-# On-disk layout (shared with validators, runner and scoring):
-#   {workspace}/data/train.parquet         id, group, <features...>, y
-#   {workspace}/data/{val,test}_inputs.parquet   id, group, <features...>     (no labels)
-#   {workspace}/data/meta.json             splits, sizes, feature columns, split strategy
-#   {labels_dir}/{val,test}.parquet        id, y                             (hidden from train.py)
-# `id` is unique within a split ("val-000042"); predictions must carry the same ids.
+def load_signal(path: str, channel: str | None = None):
+    """1-D numpy waveform from a recording (.mat / .npy / .wav / .csv). Works in prepare.py and train.py."""
+    from ml.catalog import load_signal as _load
+
+    return _load(path, channel)
+
+
+def load_image(path: str):
+    """Image as a numpy array (HxWxC, or HxW for masks). Works in prepare.py and train.py."""
+    from ml.catalog import load_image as _load
+
+    return _load(path)
+
+
+# On-disk layout (shared with validators, runner and scoring). One row per sample, `id` unique per split.
+#   {workspace}/data/train.parquet              id, group?, <inputs>, y
+#   {workspace}/data/{val,test}_inputs.parquet  id, group?, <inputs>                 (no labels)
+#   {workspace}/data/{split}_X.npy              inputs when X is an N-d array (rows match the parquet)
+#   {workspace}/data/files/{split}/<id>.<ext>   inputs when X is files (images, recordings); `path` column
+#   {workspace}/data/meta.json                  input kind, label encoding, sizes, columns, split strategy
+#   {labels_dir}/{val,test}.parquet             id, y                                (hidden from train.py)
+#   {workspace}/data/files_y/train/<id>.<ext>   train label files (e.g. masks)
+#   {labels_dir}/files_y/{val,test}/<id>.<ext>  val/test label files                 (hidden from train.py)
+# Input kinds: "table" (DataFrame), "array" (numpy, any shape), "files" (paths, or a DataFrame with `path`).
+# Labels: scalars as-is; lists / dicts (boxes, ...) as JSON strings; existing file paths (masks) are copied.
+# meta.json "label_encoding" says which one per split: "value" | "json" | "file".
+# Files are copied under neutral names (<id>.<ext>) so the original path can't leak the label.
 
 DATA_DIR = WORKSPACE / "data"
 RESERVED = {"id", "group", "y"}
 
 
-def _frame(split: str, X, y=None, groups=None):
+def _ids(split: str, n: int) -> list[str]:
+    return [f"{split}-{i:06d}" for i in range(n)]
+
+
+def _is_file(v) -> bool:
+    return isinstance(v, (str, Path)) and Path(v).suffix != "" and Path(v).is_file()
+
+
+def _inputs(split: str, X, ids: list[str]):
+    """-> (DataFrame with id + inputs, optional N-d array, input kind)."""
+    import shutil
+
+    import numpy as np
     import pandas as pd
 
-    X = X.copy() if isinstance(X, pd.DataFrame) else pd.DataFrame(X).add_prefix("x")
-    X.columns = [str(c) for c in X.columns]
-    clash = RESERVED & set(X.columns)
-    if clash:
-        raise ValueError(f"{split}: feature columns {sorted(clash)} are reserved; rename them")
-    n = len(X)
-    if y is not None and len(y) != n:
-        raise ValueError(f"{split}: X has {n} rows but y has {len(y)}")
-    if groups is not None and len(groups) != n:
-        raise ValueError(f"{split}: X has {n} rows but groups has {len(groups)}")
-    X = X.reset_index(drop=True)
-    head = pd.DataFrame({"id": [f"{split}-{i:06d}" for i in range(n)]})
-    if groups is not None:
-        head["group"] = list(groups)
-    df = pd.concat([head, X], axis=1)
-    labels = None if y is None else pd.DataFrame({"id": df["id"], "y": list(y)})
-    return df, labels
+    if isinstance(X, (list, tuple, pd.Series)) and len(X) and _is_file(X[0] if not isinstance(X, pd.Series) else X.iloc[0]):
+        X = pd.DataFrame({"path": list(X)})
+    if isinstance(X, pd.DataFrame):
+        X = X.reset_index(drop=True).copy()
+        X.columns = [str(c) for c in X.columns]
+        clash = RESERVED & set(X.columns)
+        if clash:
+            raise ValueError(f"{split}: input columns {sorted(clash)} are reserved; rename them")
+        kind = "table"
+        if "path" in X.columns:
+            kind = "files"
+            out = DATA_DIR / "files" / split
+            out.mkdir(parents=True, exist_ok=True)
+            new = []
+            for i, p in zip(ids, X["path"], strict=True):
+                target = out / f"{i}{Path(p).suffix}"
+                shutil.copy(p, target)
+                new.append(str(target.relative_to(DATA_DIR)))
+            X["path"] = new
+        return pd.concat([pd.DataFrame({"id": ids}), X], axis=1), None, kind
+    arr = np.asarray(X)
+    if arr.dtype == object:
+        raise ValueError(f"{split}: X must be a DataFrame, a numeric array or a list of file paths")
+    return pd.DataFrame({"id": ids}), arr, "array"
+
+
+def _labels(split: str, y, ids: list[str], files_root: Path):
+    """-> (list of encoded labels, encoding). Copies label files (masks) under neutral names."""
+    import shutil
+
+    import numpy as np
+
+    values = list(y)
+    if values and all(v is None or _is_file(v) for v in values) and any(v is not None for v in values):
+        out = files_root / split
+        out.mkdir(parents=True, exist_ok=True)
+        enc = []
+        for i, v in zip(ids, values, strict=True):
+            if v is None:
+                enc.append(None)
+                continue
+            target = out / f"{i}{Path(v).suffix}"
+            shutil.copy(v, target)
+            enc.append(str(target.relative_to(files_root.parent)))
+        return enc, "file"
+    if values and isinstance(values[0], (list, tuple, dict, np.ndarray)):
+        return [json.dumps(np.asarray(v).tolist() if isinstance(v, np.ndarray) else v) for v in values], "json"
+    return values, "value"
 
 
 def write_dataset(train, val, test, *, groups=None, meta: dict | None = None) -> None:
     """Persist the dataset. Call once, at the end of prepare.py.
 
-    train, val, test: (X, y) with X a DataFrame (or array) and y one target per row.
-    groups: {"train": [...], "val": [...], "test": [...]} group id per row (e.g. machine unit),
-            so validators can check that no group appears in two splits.
-    meta:   e.g. {"split": "group" | "temporal", "time_col": "cycle"}; tells validators which checks apply.
+    train, val, test: (X, y). X can be a DataFrame (tabular features), a numpy array of any shape
+        (windows, spectrograms, image tensors), or file paths (images, recordings; or a DataFrame with a
+        `path` column plus metadata). y has one label per row: a number / class, a list or dict (e.g. boxes),
+        or a file path (e.g. a mask).
+    groups: {"train": [...], "val": [...], "test": [...]} group id per row (e.g. machine or recording),
+        so validators can check that no group appears in two splits.
+    meta: e.g. {"split": "group" | "temporal", "time_col": "time"}; tells validators which checks apply.
     Val/test labels go to the hidden labels dir; train.py never sees them.
     """
+    import numpy as np
+
     labels_dir = os.environ.get("ASSEMBLY_LABELS_DIR")
     if not labels_dir:
         raise RuntimeError("ASSEMBLY_LABELS_DIR is not set: write_dataset only runs inside prepare.py")
@@ -125,46 +196,100 @@ def write_dataset(train, val, test, *, groups=None, meta: dict | None = None) ->
     labels_dir.mkdir(parents=True, exist_ok=True)
     groups = groups or {}
 
-    train_df, train_y = _frame("train", *train, groups=groups.get("train"))
-    train_df["y"] = train_y["y"]
-    train_df.to_parquet(DATA_DIR / "train.parquet", index=False)
-    sizes = {"train": len(train_df)}
-    for split, (X, y) in (("val", val), ("test", test)):
-        df, labels = _frame(split, X, y, groups=groups.get(split))
-        df.to_parquet(DATA_DIR / f"{split}_inputs.parquet", index=False)
-        labels.to_parquet(labels_dir / f"{split}.parquet", index=False)
-        sizes[split] = len(df)
+    info = {"sizes": {}, "input_kind": {}, "label_encoding": {}}
+    for split, (X, y) in (("train", train), ("val", val), ("test", test)):
+        n = len(X)
+        if len(y) != n:
+            raise ValueError(f"{split}: X has {n} rows but y has {len(y)}")
+        ids = _ids(split, n)
+        df, arr, kind = _inputs(split, X, ids)
+        if groups.get(split) is not None:
+            if len(groups[split]) != n:
+                raise ValueError(f"{split}: X has {n} rows but groups has {len(groups[split])}")
+            df.insert(1, "group", list(groups[split]))
+        if arr is not None:
+            np.save(DATA_DIR / f"{split}_X.npy", arr)
+            info["array_shape"] = list(arr.shape[1:])
+        hidden = split != "train"
+        enc, info["label_encoding"][split] = _labels(split, y, ids, (labels_dir if hidden else DATA_DIR) / "files_y")
+        if hidden:
+            import pandas as pd
 
-    features = [c for c in train_df.columns if c not in RESERVED]
-    info = {"sizes": sizes, "feature_columns": features, "has_groups": "group" in train_df, **(meta or {})}
-    (DATA_DIR / "meta.json").write_text(json.dumps(info, indent=2, default=str))
+            df.to_parquet(DATA_DIR / f"{split}_inputs.parquet", index=False)
+            pd.DataFrame({"id": ids, "y": enc}).to_parquet(labels_dir / f"{split}.parquet", index=False)
+        else:
+            df["y"] = enc
+            df.to_parquet(DATA_DIR / "train.parquet", index=False)
+            info["input_columns"] = [c for c in df.columns if c not in RESERVED]
+            info["has_groups"] = "group" in df
+        info["sizes"][split], info["input_kind"][split] = n, kind
+    (DATA_DIR / "meta.json").write_text(json.dumps({**info, **(meta or {})}, indent=2, default=str))
 
 
 # ---------------------------------------------------------------- train.py side
 
-def _read(name: str):
-    import pandas as pd
-
-    path = DATA_DIR / name
+def _meta() -> dict:
+    path = DATA_DIR / "meta.json"
     if not path.exists():
         raise FileNotFoundError(f"{path} not found: prepare.py has not written the dataset yet")
-    return pd.read_parquet(path)
+    return json.loads(path.read_text())
+
+
+def _load_inputs(split: str, df):
+    """Absolute paths for files; the N-d array for array inputs."""
+    import numpy as np
+
+    kind = _meta()["input_kind"][split]
+    if kind == "files":
+        df["path"] = [str(DATA_DIR / p) for p in df["path"]]
+    if kind == "array":
+        return np.load(DATA_DIR / f"{split}_X.npy")
+    return df
+
+
+def ids(split: str) -> list[str]:
+    """Sample ids of a split, in row order. Predictions must follow this order."""
+    import pandas as pd
+
+    name = "train.parquet" if split == "train" else f"{split}_inputs.parquet"
+    return pd.read_parquet(DATA_DIR / name, columns=["id"])["id"].tolist()
+
+
+def groups(split: str) -> list | None:
+    """Group id per row of a split (e.g. machine or recording), or None if prepare.py gave none."""
+    import pandas as pd
+
+    df = pd.read_parquet(DATA_DIR / ("train.parquet" if split == "train" else f"{split}_inputs.parquet"))
+    return df["group"].tolist() if "group" in df else None
 
 
 def load_train():
-    """(X_train, y_train). X keeps `id` and `group` (e.g. the machine unit, useful for per-unit features)."""
-    df = _read("train.parquet")
-    return df.drop(columns=["y"]), df["y"]
+    """(X_train, y_train). X is a DataFrame (tables; files with absolute `path`) or a numpy array.
+    DataFrames keep `id` and `group`; for arrays use ids("train") / groups("train")."""
+    import pandas as pd
+
+    df = pd.read_parquet(DATA_DIR / "train.parquet")
+    y = df.pop("y")
+    encoding = _meta()["label_encoding"]["train"]
+    if encoding == "json":
+        y = y.map(lambda v: None if pd.isna(v) else json.loads(v))
+    elif encoding == "file":
+        y = y.map(lambda v: None if pd.isna(v) else str(DATA_DIR / v))
+    return _load_inputs("train", df), y
 
 
 def load_val_inputs():
-    """X_val with `id` (+ `group`), no labels. Predictions must keep the same ids and order."""
-    return _read("val_inputs.parquet")
+    """X_val (no labels), same type as load_train's X. Predictions must keep ids("val") order."""
+    import pandas as pd
+
+    return _load_inputs("val", pd.read_parquet(DATA_DIR / "val_inputs.parquet"))
 
 
 def load_test_inputs():
-    """X_test with `id` (+ `group`), no labels."""
-    return _read("test_inputs.parquet")
+    """X_test (no labels), same type as load_train's X."""
+    import pandas as pd
+
+    return _load_inputs("test", pd.read_parquet(DATA_DIR / "test_inputs.parquet"))
 
 
 def time_left() -> float:

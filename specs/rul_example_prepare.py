@@ -13,11 +13,11 @@ spec = harness.task()
 df = harness.read_streams(spec["input_streams"])
 failures = harness.read_labels("maintenance_log")
 
-df = df.merge(failures, on="unit")
-df["rul"] = (df["failure_cycle"] - df["cycle"]).clip(upper=RUL_CAP)
+df = df.merge(failures, on="entity")
+df["rul"] = (df["event_time"] - df["time"]).clip(upper=RUL_CAP)
 
 # Split by unit (70/15/15) so no machine appears in two splits.
-units = np.random.default_rng(SEED).permutation(df["unit"].unique())
+units = np.random.default_rng(SEED).permutation(df["entity"].unique())
 n_train, n_val = int(0.7 * len(units)), int(0.15 * len(units))
 split_units = {
     "train": units[:n_train],
@@ -25,15 +25,15 @@ split_units = {
     "test": units[n_train + n_val:],
 }
 
-features = ["cycle", *spec["input_streams"]]
+features = ["time", *spec["input_streams"]]
 parts, groups = {}, {}
 for split, us in split_units.items():
-    part = df[df["unit"].isin(us)].sort_values(["unit", "cycle"])
+    part = df[df["entity"].isin(us)].sort_values(["entity", "time"])
     parts[split] = (part[features], part["rul"])
-    groups[split] = part["unit"].tolist()
+    groups[split] = part["entity"].tolist()
 
 harness.write_dataset(
     parts["train"], parts["val"], parts["test"],
     groups=groups,
-    meta={"split": "group", "group_col": "unit", "time_col": "cycle", "target": f"RUL clipped at {RUL_CAP}"},
+    meta={"split": "group", "group_col": "entity", "time_col": "time", "target": f"RUL clipped at {RUL_CAP}"},
 )

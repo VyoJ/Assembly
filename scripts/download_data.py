@@ -2,6 +2,7 @@
 
 Layout this produces:
     data/cmapss/{train,test,RUL}_FD001.txt
+    data/cwru/<record>.mat                                (files listed in plant/catalog.yaml)
     data/mvtec/metal_nut/{train,test,ground_truth}/...   (manual, see below)
     data/weights/{yolo11n.pt, yolo11s.pt, ...}
 
@@ -22,6 +23,7 @@ from core.config import settings
 
 CMAPSS_URL = "https://phm-datasets.s3.amazonaws.com/NASA/6.+Turbofan+Engine+Degradation+Simulation+Data+Set.zip"
 CMAPSS_FILES = ["train_FD001.txt", "test_FD001.txt", "RUL_FD001.txt"]
+CWRU_URL = "https://engineering.case.edu/sites/default/files/{file}"
 YOLO_WEIGHTS = ["yolo11n.pt", "yolo11s.pt"]
 
 
@@ -61,6 +63,26 @@ def cmapss(zip_path: str | None = None) -> None:
     print(f"ok    C-MAPSS -> {dest}")
 
 
+def cwru() -> None:
+    import yaml
+
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "src/plant/catalog.yaml").read_text())
+    src = cfg["sources"]["cwru_12k"]
+    dest = settings.data_dir / src["path"]
+    dest.mkdir(parents=True, exist_ok=True)
+    for rec in src["records"]:
+        target = dest / rec["file"]
+        if target.exists():
+            continue
+        print(f"get   CWRU {rec['file']}")
+        with urllib.request.urlopen(CWRU_URL.format(file=rec["file"]), timeout=300) as r:
+            data = r.read()
+        if not data.startswith(b"MATLAB"):
+            raise RuntimeError(f"CWRU {rec['file']}: unexpected response (not a .mat file)")
+        target.write_bytes(data)
+    print(f"ok    CWRU ({len(src['records'])} recordings) -> {dest}")
+
+
 def mvtec() -> None:
     dest = settings.data_dir / "mvtec" / "metal_nut"
     if (dest / "train").exists():
@@ -86,7 +108,7 @@ def yolo_weights() -> None:
         print(f"ok    {name} -> {dest}")
 
 
-STEPS = {"cmapss": cmapss, "mvtec": mvtec, "yolo": yolo_weights}
+STEPS = {"cmapss": cmapss, "cwru": cwru, "mvtec": mvtec, "yolo": yolo_weights}
 
 
 def main() -> None:
