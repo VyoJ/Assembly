@@ -10,7 +10,7 @@ task's KPIs pass on validation, then keep improving the score if budget remains.
 - `prepare.py`: how the dataset was built. Read-only.
 - `train.py`: **the only file you change.**
 - `results.tsv`: every experiment so far (score, KPIs passed, status, description).
-- Recipes (`recipes/INDEX.md`): working reference scripts you may read and borrow from.
+- Recipes (`recipes/INDEX.md`): reference scripts you may read with the `read_recipe` tool and borrow from.
 
 ## How you're scored
 After `train.py` runs, fixed scoring code compares your validation predictions with labels you
@@ -25,9 +25,27 @@ otherwise it's discarded and the next experiment starts from the best `train.py`
 4. Size training with `harness.time_left()`: stop training before it hits 0. (A later full-train
    stage reruns your best `train.py` with a bigger budget, so budget-aware code automatically trains longer.)
 5. `train.py` MUST end by calling `harness.save_model(model)` and then `harness.finish(predict_fn)`.
-   `predict_fn` must return predictions in the task's `prediction_format`.
-6. You have no validation labels. If you need early stopping, threshold tuning, or a self-check,
-   carve an internal split from the training data (respect groups / time order to avoid leakage).
+6. **The saved model is what gets deployed.** It must take the raw feature columns exactly as
+   `harness.load_val_inputs()` returns them and output the prediction directly. Put any preprocessing
+   (scaling, imputation, feature selection) INSIDE the model: an sklearn `Pipeline`, or inside the torch
+   `nn.Module`. Torch models must output probabilities, not logits, for `binary_score` / `class_probs`.
+7. You have no validation labels. If you need early stopping, threshold tuning, or a self-check,
+   carve an internal split from the training data with `harness.groups("train")` (or time order) so
+   the same unit never lands on both sides.
+8. Crashes, timeouts and malformed predictions are scored as failures and discarded.
+
+## Data and predictions
+- `X, y = harness.load_train()`: `X` is a DataFrame of features indexed by `sample_id`; `y` is a Series
+  with the same index. `harness.load_val_inputs()` / `load_test_inputs()` return `X` only.
+- `predict_fn(X)` gets a DataFrame like those and must return, per `prediction_format`:
+  - `scalar`: one number per row
+  - `binary_score`: one score in [0, 1] per row (higher = more likely positive); pass the decision
+    threshold as `harness.finish(predict_fn, threshold=t)`. recall / precision / false_alarm_rate are
+    measured at that threshold.
+  - `class_probs`: an `[n_rows, n_classes]` array of probabilities
+  - `boxes`: for each image, a list of `[x1, y1, x2, y2, score, class]`
+- `scalar` early-warning metrics alarm when the predicted value is `<= early_warning_horizon`
+  (see `data/meta.json`).
 
 ## How to work
 - **Experiment 0:** write a simple, fast, robust baseline. Get a valid score first.
@@ -36,8 +54,8 @@ otherwise it's discarded and the next experiment starts from the best `train.py`
 - If a KPI is about a threshold (false-alarm rate, recall), tune the threshold on an internal split
   before changing the model.
 - Prefer simpler code at equal score. A tiny gain from a big messy change is not worth keeping.
-- Print short progress lines (loss, epoch, internal-split metrics); the last lines of the log are
-  shown to you after each run.
+- Print short progress lines as `key=value` pairs, e.g. `epoch=3 loss=0.214 val_rmse=17.9`. They're shown
+  live, and the last 40 lines of the log are shown to you after each run.
 
 ## Output format for each experiment
 ```
