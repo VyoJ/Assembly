@@ -3,6 +3,7 @@
 import builtins
 import hashlib
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -593,3 +594,447 @@ def test_unexpected_programming_errors_are_not_hidden(dataset, monkeypatch):
     monkeypatch.setattr(pd, "read_parquet", broken)
     with pytest.raises(RuntimeError, match="programming bug"):
         validators.validate(dataset["ws"])
+
+
+@pytest.fixture
+def separate_dataset(dataset):
+    data = workspace.ws_dir(dataset["ws"]) / "data"
+    hidden = workspace.labels_dir(dataset["ws"].run_id, dataset["ws"].task_id)
+    data.mkdir(parents=True)
+    hidden.mkdir(parents=True)
+    meta = {"prediction_format": "scalar", "input_kind": dict.fromkeys(dataset["inputs"], "table"),
+            "sizes": dict.fromkeys(dataset["inputs"], 4), "split": "group", "group_col": "entity",
+            "time_col": "cycle", "groups": {s: f["group"].tolist() for s, f in dataset["inputs"].items()}}
+    for split in dataset["inputs"]:
+        dataset["inputs"][split].drop(columns="group").rename(columns={"id": "sample_id"}).to_parquet(
+            data / f"{split}_inputs.parquet", index=False)
+        dataset["labels"][split].rename(columns={"id": "sample_id"}).to_parquet(
+            (data if split == "train" else hidden) / f"{split}_labels.parquet", index=False)
+    (data / "meta.json").write_text(json.dumps(meta))
+    return dataset["ws"], data, hidden, meta
+
+
+def _write_meta(data, meta):
+    (data / "meta.json").write_text(json.dumps(meta))
+
+
+def _arrays(data, meta):
+    for split in ("train", "val", "test"):
+        f = pd.read_parquet(data / f"{split}_inputs.parquet")
+        f[["sample_id"]].to_parquet(data / f"{split}_inputs.parquet", index=False)
+        np.save(data / f"{split}_inputs.npy", np.arange(24, dtype="float32").reshape(4, 2, 3))
+    meta["input_kind"] = dict.fromkeys(("train", "val", "test"), "array")
+    _write_meta(data, meta)
+
+
+def test_separate_labels_metadata_groups_and_train_alignment(separate_dataset):
+    ws, data, _hidden, meta = separate_dataset
+    labels = pd.read_parquet(data / "train_labels.parquet")
+    labels.iloc[::-1].to_parquet(data / "train_labels.parquet", index=False)
+    report = validators.validate(ws)
+    assert report.ok, report.messages
+    assert "| train | 4 | 1 | 0 | 0 |" in report.data_card
+    meta["groups"]["test"] = meta["groups"]["train"]
+    _write_meta(data, meta)
+    report = validators.validate(ws)
+    assert not report.ok and not report.checks["group_disjoint"]
+
+
+@pytest.mark.parametrize("problem", ["kind_missing", "kind_invalid", "kind_mixed", "format", "groups_missing",
+                                      "groups_short", "groups_nested", "sizes", "encoding", "train_ids",
+                                      "public_labels", "ambiguous", "input_y", "index_only", "duplicate_id"])
+def test_new_contract_corruption_fails_closed(separate_dataset, problem):
+    ws, data, hidden, meta = separate_dataset
+    if problem == "kind_missing":
+        meta.pop("input_kind")
+    elif problem == "kind_invalid":
+        meta["input_kind"]["val"] = ["table"]
+    elif problem == "kind_mixed":
+        meta["input_kind"]["val"] = "array"
+    elif problem == "format":
+        meta["prediction_format"] = "binary_score"
+    elif problem == "groups_missing":
+        meta.pop("groups")
+    elif problem == "groups_short":
+        meta["groups"]["val"] = [2]
+    elif problem == "groups_nested":
+        meta["groups"]["val"] = [[2]] * 4
+    elif problem == "sizes":
+        meta.pop("sizes")
+    elif problem == "encoding":
+        meta["label_encoding"] = "unknown"
+    elif problem == "train_ids":
+        f = pd.read_parquet(data / "train_labels.parquet")
+        f.loc[0, "sample_id"] = "wrong"
+        f.to_parquet(data / "train_labels.parquet", index=False)
+    elif problem == "public_labels":
+        (data / "val_labels.parquet").write_bytes((hidden / "val_labels.parquet").read_bytes())
+    elif problem == "ambiguous":
+        (data / "train.parquet").write_bytes((data / "train_inputs.parquet").read_bytes())
+    else:
+        f = pd.read_parquet(data / "val_inputs.parquet")
+        if problem == "input_y":
+            f["y"] = 0
+        elif problem == "index_only":
+            f = f.set_index("sample_id")
+        else:
+            f.loc[1, "sample_id"] = f.loc[0, "sample_id"]
+        f.to_parquet(data / "val_inputs.parquet", index=problem == "index_only")
+    _write_meta(data, meta)
+    report = validators.validate(ws)
+    assert not report.ok, report.messages
+    assert not report.checks["no_label_leak"]
+
+
+def test_new_temporal_split_compares_independent_entity_times(separate_dataset):
+    ws, data, _, meta = separate_dataset
+    meta.update(split="temporal", time_col="cycle")
+    for phase, split in enumerate(("train", "val", "test")):
+        f = pd.read_parquet(data / f"{split}_inputs.parquet")
+        f["cycle"] = [1 + phase * 2, 2 + phase * 2, 101 + phase * 2, 102 + phase * 2]
+        f.to_parquet(data / f"{split}_inputs.parquet", index=False)
+        meta["groups"][split] = [1, 1, 2, 2]
+    _write_meta(data, meta)
+    assert validators.validate(ws).ok
+    f["cycle"] = [1, 2, 101, 102]
+    f.to_parquet(data / "test_inputs.parquet", index=False)
+    assert not validators.validate(ws).checks["time_ordered"]
+
+
+def test_array_shape_dtype_finiteness_and_summary(separate_dataset):
+    ws, data, _, meta = separate_dataset
+    _arrays(data, meta)
+    before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in data.iterdir()}
+    report = validators.validate(ws)
+    assert report.ok, report.messages
+    assert "shape=(4, 2, 3); dtype=float32" in report.data_card
+    assert "reordered array contents" in report.data_card
+    assert before == {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in data.iterdir()}
+
+
+@pytest.mark.parametrize("problem", ["missing", "corrupt", "short", "shape", "dtype", "nan", "object",
+                                      "zero_width", "scalar", "companion_feature", "temporal_without_time"])
+def test_invalid_array_integrity(separate_dataset, problem):
+    ws, data, _, meta = separate_dataset
+    _arrays(data, meta)
+    p = data / "val_inputs.npy"
+    if problem == "missing":
+        p.unlink()
+    elif problem == "corrupt":
+        p.write_bytes(b"PRIVATE_BROKEN_ARRAY")
+    elif problem == "companion_feature":
+        f = pd.read_parquet(data / "val_inputs.parquet").assign(extra=1)
+        f.to_parquet(data / "val_inputs.parquet", index=False)
+    elif problem == "temporal_without_time":
+        meta.update(split="temporal", time_col="time")
+        _write_meta(data, meta)
+    else:
+        arr = {"short": np.zeros((3, 2, 3), dtype="float32"), "shape": np.zeros((4, 6), dtype="float32"),
+               "dtype": np.zeros((4, 2, 3), dtype="complex128"), "nan": np.full((4, 2, 3), np.nan),
+               "object": np.array([object()] * 4), "zero_width": np.zeros((4, 0)), "scalar": np.array(2)}[problem]
+        np.save(p, arr)
+    report = validators.validate(ws)
+    assert not report.ok, report.messages
+    assert "PRIVATE_BROKEN_ARRAY" not in report.model_dump_json()
+    if problem in {"missing", "corrupt"}:
+        assert not report.checks["files_present"]
+
+
+def test_array_target_copy_is_id_aligned(separate_dataset):
+    ws, data, hidden, meta = separate_dataset
+    _arrays(data, meta)
+    for split in ("train", "val", "test"):
+        p = (data if split == "train" else hidden) / f"{split}_labels.parquet"
+        f = pd.read_parquet(p)
+        np.save(data / f"{split}_inputs.npy", np.repeat(f["y"].to_numpy()[:, None], 3, axis=1))
+        f.iloc[::-1].to_parquet(p, index=False)
+    report = validators.validate(ws)
+    assert report.checks["format"] and not report.checks["no_label_leak"]
+    assert "ID-aligned target" in report.data_card
+
+
+@pytest.mark.parametrize("problem", [None, "unknown_index", "fractional", "name", "missing_class",
+                                      "duplicate_classes", "invalid_classes"])
+def test_multiclass_encoding(separate_dataset, problem):
+    ws, data, hidden, meta = separate_dataset
+    ws = ws.model_copy(update={"spec": ws.spec.model_copy(update={"prediction_format": "class_probs",
+                                                              "primary_metric": "macro_f1", "metrics": ["macro_f1"]})})
+    meta.update(prediction_format="class_probs", classes=["normal", "fault"])
+    for split in ("train", "val", "test"):
+        p = (data if split == "train" else hidden) / f"{split}_labels.parquet"
+        f = pd.read_parquet(p)
+        f["y"] = [0, 1, 0, 1]
+        if split == "val" and problem in {"unknown_index", "fractional", "name", "missing_class"}:
+            f["y"] = {"unknown_index": [0, 2, 0, 1], "fractional": [0., .5, 0., 1.],
+                      "name": ["normal", "fault", "normal", "fault"], "missing_class": [0, 0, 0, 0]}[problem]
+        f.to_parquet(p, index=False)
+    if problem == "duplicate_classes":
+        meta["classes"] = ["normal", "normal"]
+    elif problem == "invalid_classes":
+        meta["classes"] = [{"secret": "PRIVATE_LABEL"}, "fault"]
+    _write_meta(data, meta)
+    report = validators.validate(ws)
+    assert report.ok == (problem is None), report.messages
+    assert "PRIVATE_LABEL" not in report.model_dump_json()
+
+
+@pytest.mark.parametrize("problem", [None, "absolute", "traversal", "non_neutral", "missing", "corrupt", "signal", "symlink"])
+def test_file_images_integrity_and_unverified_pixel_leakage(separate_dataset, tmp_path, problem):
+    Image = pytest.importorskip("PIL.Image")
+    ws, data, _, meta = separate_dataset
+    meta["input_kind"] = dict.fromkeys(("train", "val", "test"), "files")
+    for split in ("train", "val", "test"):
+        f = pd.read_parquet(data / f"{split}_inputs.parquet")[["sample_id"]]
+        paths = []
+        for sid in f["sample_id"]:
+            rel = Path("files") / split / f"{sid}.png"
+            p = data / rel
+            p.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGB", (4, 4)).save(p)
+            paths.append(str(rel))
+        f["path"] = paths
+        if split == "val":
+            if problem == "absolute":
+                f.loc[0, "path"] = str(data / paths[0])
+            elif problem == "traversal":
+                f.loc[0, "path"] = "../../secret.png"
+            elif problem == "non_neutral":
+                f.loc[0, "path"] = "files/val/fault.png"
+            elif problem == "missing":
+                (data / paths[0]).unlink()
+            elif problem == "corrupt":
+                (data / paths[0]).write_bytes(b"PRIVATE_IMAGE_PAYLOAD")
+            elif problem == "signal":
+                f.loc[0, "path"] = paths[0].replace(".png", ".mat")
+            elif problem == "symlink":
+                external = tmp_path / "external.png"
+                Image.new("RGB", (4, 4)).save(external)
+                (data / paths[0]).unlink()
+                (data / paths[0]).symlink_to(external)
+        f.to_parquet(data / f"{split}_inputs.parquet", index=False)
+    _write_meta(data, meta)
+    report = validators.validate(ws)
+    assert not report.ok and not report.checks["no_label_leak"]
+    assert report.checks["format"] == (problem is None), report.messages
+    assert "PRIVATE_IMAGE_PAYLOAD" not in report.model_dump_json()
+    if problem in {"missing", "corrupt"}:
+        assert not report.checks["files_present"]
+
+
+@pytest.mark.parametrize("kind, fmt", [("table", "scalar"), ("array", "scalar"), ("array", "class_probs"),
+                                      ("table", "binary_score"), ("array", "binary_score")])
+def test_real_writer_runner_and_scorer_without_validator_stub(dataset, monkeypatch, kind, fmt):
+    import inspect
+
+    from ml import runner
+    from ml.harness import harness
+
+    if 'raise NotImplementedError' in inspect.getsource(harness.write_dataset):
+        pytest.skip("real write_dataset absent on this branch")
+    ws = dataset["ws"].model_copy(update={"spec": dataset["ws"].spec.model_copy(update={
+        "prediction_format": fmt,
+        "primary_metric": {"class_probs": "accuracy", "binary_score": "auroc", "scalar": "mae"}[fmt],
+        "metrics": [{"class_probs": "accuracy", "binary_score": "auroc", "scalar": "mae"}[fmt]],
+    })})
+    ws = workspace.create_workspace(ws.run_id, ws.spec)
+    code = '''
+import harness, numpy as np, pandas as pd
+parts = []
+for i in range(3):
+    X = np.arange(24, dtype="float32").reshape(4, 2, 3) if KIND == "array" else pd.DataFrame({"x": [2.,4.,6.,8.]})
+    y = ["fault", "normal", "fault", "normal"] if FMT == "class_probs" else [1.,3.,5.,7.]
+    if FMT == "binary_score":
+        y = [0,1,0,1]
+    parts.append((X, y))
+harness.write_dataset(*parts, groups={s: [i]*4 for i,s in enumerate(("train","val","test"))},
+                      meta={"split": "group", "group_col": "entity"})
+'''.replace("KIND", repr(kind)).replace("FMT", repr(fmt))
+    report = runner.run_prepare(ws, code)
+    assert report.ok, (report.messages, report.log_tail)
+    assert report.checks["prepare_runs"]
+    assert (Path(ws.path) / "data_card.md").exists()
+    train = '''
+import harness, os, json, numpy as np, pandas as pd
+from pathlib import Path
+X, y = harness.load_train()
+assert len(X) == len(y) == len(harness.ids("train"))
+assert harness.groups("train").index.tolist() == harness.ids("train")
+exp = Path(os.environ["ASSEMBLY_EXP_DIR"])
+for split, Xs in (("val", harness.load_val_inputs()), ("test", harness.load_test_inputs())):
+    assert len(Xs) == len(harness.ids(split))
+    out = {"sample_id": harness.ids(split)}
+    if FMT == "class_probs":
+        assert harness.classes() == ["fault", "normal"]
+        out.update(p_0=[1.,0.,1.,0.], p_1=[0.,1.,0.,1.])
+    elif FMT == "binary_score":
+        out["score"] = [0.1,0.9,0.1,0.9]
+    else:
+        out["pred"] = [1.,3.,5.,7.]
+    pd.DataFrame(out).iloc[::-1].to_parquet(exp / f"{split}_predictions.parquet", index=False)
+(exp / "timings.json").write_text(json.dumps({"p50_latency_ms": 0.1, "p95_latency_ms": 0.2}))
+(exp / "predict_meta.json").write_text(json.dumps({"threshold": 0.5}))
+'''.replace("FMT", repr(fmt))
+    result = runner.run_experiment(ws, train, {"description": "real validator integration"})
+    assert result.status == "keep", result.log_tail
+    metric = {"class_probs": "accuracy", "binary_score": "auroc", "scalar": "mae"}[fmt]
+    assert result.metrics[metric] == (0.0 if fmt == "scalar" else 1.0)
+    assert workspace.best_result(ws).exp_id == result.exp_id
+    final = runner.final_test(ws)
+    assert final.test_metrics[metric] == result.metrics[metric]
+
+
+def test_real_runner_export_package_with_real_validator(dataset):
+    from ml import package, runner
+
+    if not hasattr(runner, "_score_dir"):
+        pytest.skip("real runner absent on this branch")
+    pytest.importorskip("sklearn")
+    ws = workspace.create_workspace(dataset["ws"].run_id, dataset["ws"].spec)
+    prepare = '''
+import os,json,pandas as pd
+from pathlib import Path
+parts = ("train","val","test")
+data, hidden = Path("data"), Path(os.environ["ASSEMBLY_LABELS_DIR"])
+for split in parts:
+    ids = [f"{split}-{i:06d}" for i in range(4)]
+    pd.DataFrame({"sample_id": ids, "x": [1.,2.,3.,4.]}).to_parquet(data / f"{split}_inputs.parquet", index=False)
+    pd.DataFrame({"sample_id": ids, "y": [3.,5.,7.,9.]}).to_parquet(
+        (data if split == "train" else hidden) / f"{split}_labels.parquet", index=False)
+(data / "meta.json").write_text(json.dumps({"prediction_format": "scalar", "split": "group", "group_col": "entity",
+    "input_kind": dict.fromkeys(parts,"table"), "sizes": dict.fromkeys(parts,4),
+    "groups": {s:[i]*4 for i,s in enumerate(parts)}}))
+'''
+    report = runner.run_prepare(ws, prepare)
+    assert report.ok, (report.messages, report.log_tail)
+    train = '''
+import os,json,pandas as pd
+from pathlib import Path
+from sklearn.linear_model import LinearRegression
+from ml.models.export import save_model
+exp = Path(os.environ["ASSEMBLY_EXP_DIR"])
+X = pd.read_parquet("data/train_inputs.parquet").set_index("sample_id")
+y = pd.read_parquet("data/train_labels.parquet").set_index("sample_id")["y"]
+model = LinearRegression().fit(X,y)
+save_model(model,str(exp / "model"),example_input=X.iloc[:4])
+for split in ("val","test"):
+    Xs = pd.read_parquet(f"data/{split}_inputs.parquet").set_index("sample_id")
+    pd.DataFrame({"sample_id": Xs.index, "pred": model.predict(Xs)}).to_parquet(exp / f"{split}_predictions.parquet",index=False)
+(exp / "timings.json").write_text(json.dumps({"p50_latency_ms":0.1,"p95_latency_ms":0.2}))
+'''
+    result = runner.run_experiment(ws, train, {})
+    assert result.status == "keep", result.log_tail
+    runner.final_test(ws)
+    predictor = package.load_predictor(package.package(ws))
+    assert predictor.predict({"x": 2.})["value"] == pytest.approx(5.)
+    assert predictor.predict({"replay": 0})["value"] == pytest.approx(3.)
+
+
+def test_array_companion_reordering_is_rejected(separate_dataset):
+    ws, data, _, meta = separate_dataset
+    _arrays(data, meta)
+    p = data / "val_inputs.parquet"
+    pd.read_parquet(p).iloc[::-1].to_parquet(p, index=False)
+    report = validators.validate(ws)
+    assert not report.ok and not report.checks["format"]
+    assert "ordinal IDs" in report.data_card
+
+
+def test_compatible_real_array_dtypes_and_one_dimensional_inputs(separate_dataset):
+    ws, data, _, meta = separate_dataset
+    _arrays(data, meta)
+    for split, dtype in zip(("train", "val", "test"), ("int32", "float32", "float64"), strict=True):
+        np.save(data / f"{split}_inputs.npy", np.array([2, 4, 6, 8], dtype=dtype))
+    report = validators.validate(ws)
+    assert report.ok, report.messages
+
+
+def test_new_hidden_targets_and_errors_are_not_disclosed(separate_dataset):
+    ws, _data, hidden, _ = separate_dataset
+    p = hidden / "val_labels.parquet"
+    f = pd.read_parquet(p).assign(y="PRIVATE_INVALID_TARGET")
+    f.to_parquet(p, index=False)
+    report = validators.validate(ws)
+    assert not report.ok and "PRIVATE_INVALID_TARGET" not in report.model_dump_json()
+
+
+def test_event_time_is_forbidden_as_an_input(separate_dataset):
+    ws, data, _, _ = separate_dataset
+    for split in ("train", "val", "test"):
+        p = data / f"{split}_inputs.parquet"
+        pd.read_parquet(p).assign(event_time=100).to_parquet(p, index=False)
+    assert not validators.validate(ws).checks["no_label_leak"]
+
+
+@pytest.mark.parametrize("problem", ["duplicate_inputs", "duplicate_labels", "multilevel"])
+def test_malformed_new_columns_do_not_crash(separate_dataset, monkeypatch, problem):
+    ws, _, _, _ = separate_dataset
+    real_read = pd.read_parquet
+
+    def read(path, **kwargs):
+        f = real_read(path, **kwargs)
+        if path.name == ("train_labels.parquet" if problem == "duplicate_labels" else "train_inputs.parquet"):
+            if problem == "multilevel":
+                f.columns = pd.MultiIndex.from_tuples([(c, "value") for c in f.columns])
+            else:
+                f = pd.concat([f, f[["sample_id"]]], axis=1)
+        return f
+
+    monkeypatch.setattr(pd, "read_parquet", read)
+    report = validators.validate(ws)
+    assert not report.ok and not report.checks["format"]
+
+
+def test_new_metadata_diagnostics_do_not_dump_arbitrary_values(separate_dataset):
+    ws, data, _, meta = separate_dataset
+    meta["input_kind"]["val"] = ["PRIVATE_ENCODING_VALUE"]
+    _write_meta(data, meta)
+    report = validators.validate(ws)
+    assert not report.ok and "PRIVATE_ENCODING_VALUE" not in report.model_dump_json()
+
+
+@pytest.mark.parametrize("copy_target", [False, True])
+def test_explicit_group_input_remains_a_feature(separate_dataset, copy_target):
+    ws, data, hidden, meta = separate_dataset
+    for split in ("train", "val", "test"):
+        p = data / f"{split}_inputs.parquet"
+        pd.read_parquet(p).assign(group=meta["groups"][split]).to_parquet(p, index=False)
+        if copy_target:
+            p = (data if split == "train" else hidden) / f"{split}_labels.parquet"
+            pd.read_parquet(p).assign(y=meta["groups"][split]).to_parquet(p, index=False)
+    report = validators.validate(ws)
+    assert report.checks["format"], report.messages
+    assert report.ok == (not copy_target)
+    assert report.checks["no_label_leak"] == (not copy_target)
+    assert "`group`:" in report.data_card
+
+
+def test_invalid_metadata_groups_cannot_be_replaced_by_input_groups(separate_dataset):
+    ws, data, _, meta = separate_dataset
+    for split in ("train", "val", "test"):
+        p = data / f"{split}_inputs.parquet"
+        pd.read_parquet(p).assign(group=meta["groups"][split]).to_parquet(p, index=False)
+    meta["groups"]["val"] = [[2]] * 4
+    _write_meta(data, meta)
+    report = validators.validate(ws)
+    assert not report.ok and not report.checks["group_disjoint"]
+
+
+def test_new_groups_do_not_require_an_optional_source_column_name(separate_dataset):
+    ws, data, _, meta = separate_dataset
+    meta.pop("group_col")
+    _write_meta(data, meta)
+    report = validators.validate(ws)
+    assert report.ok, report.messages
+
+
+def test_empty_array_split_fails_without_crashing_the_leak_scan(separate_dataset):
+    ws, data, hidden, meta = separate_dataset
+    _arrays(data, meta)
+    for p in (data / "val_inputs.parquet", hidden / "val_labels.parquet"):
+        pd.read_parquet(p).iloc[:0].to_parquet(p, index=False)
+    np.save(data / "val_inputs.npy", np.zeros((0, 2, 3), dtype="float32"))
+    meta["groups"]["val"] = []
+    meta["sizes"]["val"] = 0
+    _write_meta(data, meta)
+    report = validators.validate(ws)
+    assert not report.ok and not report.checks["min_sizes"] and not report.checks["no_label_leak"]

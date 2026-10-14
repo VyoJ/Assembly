@@ -1,12 +1,13 @@
 """Read-only validation of the persisted sensor datasets produced by prepare.py.
 
-Supports scalar regression and binary ground truth encoded as numeric 0/1 (or
-booleans). Split strategy comes from data/meta.json, never guessed from prose.
+Supports legacy tables and the separate-label layout (tables and numeric arrays),
+including class indices. Split strategy comes from data/meta.json, never guessed from prose.
 Hidden labels are used internally and are never included in diagnostics.
 """
 
 import json
 from itertools import combinations
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -33,7 +34,8 @@ CHECKS = [
 
 
 def _feature_columns(frame: pd.DataFrame) -> list[str]:
-    return [column for column in frame.columns if column not in {"id", "group", "y"}]
+    return [column for column in frame.columns if column not in {"id", "y"}
+            and (column != "group" or frame.attrs.get("group_is_feature", False))]
 
 
 def _finite_numeric(values: pd.Series) -> bool:
@@ -65,7 +67,7 @@ def _id_errors(frame: pd.DataFrame, name: str) -> list[str]:
 def _format_errors(inputs: dict, labels: dict, meta: dict) -> list[str]:
     errors = []
     id_errors = []
-    for name, frame in [*inputs.items(), *((f"{s} labels", labels[s]) for s in ("val", "test"))]:
+    for name, frame in [*inputs.items(), *((f"{s} labels", labels[s]) for s in labels)]:
         if frame.columns.nlevels != 1 or not frame.columns.is_unique:
             errors.append(f"{name}: columns must be flat and unique.")
             continue
@@ -83,7 +85,11 @@ def _format_errors(inputs: dict, labels: dict, meta: dict) -> list[str]:
         if "y" in inputs[split]:
             errors.append(f"{split}: y must be stored only in the protected label table.")
     features = _feature_columns(inputs["train"])
-    if not features:
+    kinds = meta.get("input_kind", {})
+    if not isinstance(kinds, dict):
+        errors.append("meta.json: input_kind must be an object.")
+        kinds = {}
+    if not features and kinds.get("train") != "array":
         errors.append("train: at least one input feature is required.")
     for split, frame in inputs.items():
         if _feature_columns(frame) != features:
@@ -92,6 +98,8 @@ def _format_errors(inputs: dict, labels: dict, meta: dict) -> list[str]:
             values = frame[column]
             if is_datetime64_any_dtype(values.dtype):
                 valid = not values.isna().any()
+            elif column == "path" and kinds.get(split) == "files":
+                valid = not values.isna().any()  # containment and contents checked by _new_layout
             else:
                 valid = _finite_numeric(values)
             if not valid:
@@ -107,7 +115,7 @@ def _format_errors(inputs: dict, labels: dict, meta: dict) -> list[str]:
         for frame in [*inputs.values(), *labels.values()]
     )
     if ids_ready:
-        for split in ("val", "test"):
+        for split in labels:
             if set(inputs[split]["id"]) != set(labels[split]["id"]):
                 errors.append(
                     f"{split}: input and protected label IDs must match exactly; row order may differ."
@@ -136,7 +144,10 @@ def _split_errors(inputs: dict, meta: dict, metadata_errors: list[str]) -> tuple
             [],
         )
     group_col = meta.get("group_col")
-    if group_col not in ("group", "unit"):
+    if "input_kind" in meta:
+        if "group_col" in meta and (not isinstance(group_col, str) or not group_col.strip()):
+            errors.append("meta.json: group_col must describe the source of persisted groups.")
+    elif group_col not in ("group", "unit"):
         errors.append(
             "meta.json: group_col must identify persisted 'group' or the verified raw 'unit' alias."
         )
@@ -151,6 +162,12 @@ def _split_errors(inputs: dict, meta: dict, metadata_errors: list[str]) -> tuple
             errors.append(f"{split}: missing persisted group column.")
             continue
         groups = frame["group"]
+        if "input_kind" in meta:
+            stored = meta.get("groups", {})
+            stored = stored.get(split) if isinstance(stored, dict) else None
+            if (not isinstance(stored, list) or len(stored) != len(frame)
+                    or not pd.Series(stored, index=frame.index).equals(groups)):
+                errors.append(f"{split}: groups cannot be verified against row-aligned meta.json groups.")
         if groups.isna().any() or infer_dtype(groups, skipna=True) not in {"string", "integer", "empty"}:
             errors.append(f"{split}: groups must be non-null strings or integers.")
         if group_col == "unit" and "unit" in frame and not frame["unit"].eq(groups).all():
@@ -229,11 +246,17 @@ def _size_errors(inputs: dict, ws: Workspace) -> list[str]:
     return errors
 
 
-def _label_errors(labels: dict, ws: Workspace) -> list[str]:
+def _label_errors(labels: dict, ws: Workspace, meta: dict | None = None) -> list[str]:
     fmt = ws.spec.prediction_format
-    if fmt not in {"scalar", "binary_score"}:
-        return [f"Unsupported prediction format '{fmt}'; its ground-truth schema is not agreed yet."]
+    classes = (meta or {}).get("classes")
+    if fmt not in {"scalar", "binary_score"} and not (fmt == "class_probs" and "input_kind" in (meta or {})):
+        return [f"Unsupported prediction format '{fmt}'; ground-truth validation is not implemented."]
     errors = []
+    if fmt == "class_probs" and (not isinstance(classes, list) or len(classes) < 2
+                or any(not isinstance(c, (str, int, float)) or isinstance(c, bool) for c in classes)
+                or len({json.dumps(c) for c in classes}) != len(classes)
+                or any(isinstance(c, float) and not np.isfinite(c) for c in classes)):
+        return ["meta.json: classes must be a unique, finite vocabulary of at least two classes."]
     metrics = {ws.spec.primary_metric, *ws.spec.metrics, *(k.metric for k in ws.spec.kpis)}
     for split, frame in labels.items():
         if "y" not in frame or not frame.columns.is_unique:
@@ -247,12 +270,19 @@ def _label_errors(labels: dict, ws: Workspace) -> list[str]:
                 errors.append(f"{split}: binary ground truth must be 0/1, not prediction scores.")
             elif targets.nunique() < 2:
                 errors.append(f"{split}: binary training/evaluation requires both ground-truth classes.")
+        elif fmt == "class_probs":
+            if (is_bool_dtype(targets.dtype) or not targets.isin(range(len(classes))).all()
+                    or not pd.api.types.is_integer_dtype(targets.dtype)):
+                errors.append(f"{split}: targets must be integer indices into classes, not class names or scores.")
+            elif (targets.nunique() < 2 or (split == "train" or "min_class_recall" in metrics)
+                  and set(targets) != set(range(len(classes)))):
+                errors.append(f"{split}: insufficient class coverage for training/requested evaluation metrics.")
         elif split != "train" and "r2" in metrics and targets.nunique() < 2:
             errors.append(f"{split}: r2 requires non-constant evaluation targets.")
     return errors
 
 
-def _leak_errors(inputs: dict, labels: dict, scan_ready: bool) -> list[str]:
+def _leak_errors(inputs: dict, labels: dict, scan_ready: bool, arrays: dict | None = None) -> list[str]:
     forbidden = {
         "y",
         "target",
@@ -261,10 +291,13 @@ def _leak_errors(inputs: dict, labels: dict, scan_ready: bool) -> list[str]:
         "rul",
         "remaining_useful_life",
         "failure_cycle",
+        "event_time",
         "cycles_to_failure",
         "time_to_failure",
     }
     errors = []
+    if any("path" in frame for frame in inputs.values()):
+        errors.append("NOT VERIFIED: image/recording pixel or waveform target-copy scan is not implemented.")
     for split, frame in inputs.items():
         for column in frame.columns:
             if not isinstance(column, str) or column in {"id", "group"} or split == "train" and column == "y":
@@ -273,7 +306,7 @@ def _leak_errors(inputs: dict, labels: dict, scan_ready: bool) -> list[str]:
             if name in forbidden or name.startswith(("target_", "label_", "y_")):
                 errors.append(f"{split}: forbidden target/target-derived input column '{column}'.")
     if not scan_ready:
-        errors.append("NOT VERIFIED: target-copy scan requires valid schemas, aligned IDs and valid targets.")
+        errors.append("NOT VERIFIED: target-copy scan requires valid schemas, non-empty inputs, aligned IDs and valid targets.")
         return errors
     # shortcut: names and exact copies only; availability-time and indirect leakage need preparation metadata.
     for column in _feature_columns(inputs["train"]):
@@ -287,7 +320,142 @@ def _leak_errors(inputs: dict, labels: dict, scan_ready: bool) -> list[str]:
             errors.append(
                 f"Input '{column}' exactly copies the ID-aligned target across all splits; inspect preparation."
             )
+    if arrays:
+        copied = None
+        for split, array in arrays.items():
+            targets = labels[split].set_index("id")["y"].loc[inputs[split]["id"]].to_numpy()
+            matches = (array.reshape(len(array), -1) == targets[:, None]).all(axis=0)
+            copied = matches if copied is None else copied & matches
+        if copied is not None and copied.any():
+            errors.append("Array input exactly copies the ID-aligned target across all splits.")
     return errors
+
+
+def _new_layout(ws: Workspace, loaded: dict, meta: dict) -> tuple[dict, dict, dict, list[str], bool]:
+    """Normalize separate-label tables in memory; array order is the companion table's row order."""
+    inputs, labels, arrays, errors = {}, {}, {}, []
+    artifacts_ok = True
+    data_dir = workspace.ws_dir(ws) / "data"
+    kinds = meta.get("input_kind")
+    if not isinstance(kinds, dict) or set(kinds) != {"train", "val", "test"}:
+        errors.append("meta.json: input_kind must declare table/files/array for every split.")
+        kinds = {}
+    if any(k not in {"table", "array", "files"} for k in kinds.values() if isinstance(k, str)) or any(
+        not isinstance(k, str) for k in kinds.values()
+    ):
+        errors.append("meta.json: unsupported input_kind.")
+    if len({k for k in kinds.values() if isinstance(k, str)}) > 1:
+        errors.append("meta.json: input_kind must be consistent across splits.")
+    meta["input_kind"] = kinds
+    if meta.get("prediction_format") != ws.spec.prediction_format:
+        errors.append("meta.json: prediction_format must match the frozen task.")
+    if "sizes" not in meta:
+        errors.append("meta.json: sizes must describe all persisted split sizes.")
+    if "label_encoding" in meta:
+        errors.append("meta.json: label_encoding is not defined by the current writer/scorer contract.")
+    if any((data_dir / f"{s}_labels{ext}").exists() for s in ("val", "test") for ext in (".parquet", ".json")):
+        errors.append("Validation/test labels must not be persisted in the public data directory.")
+    if any((data_dir / "files_y" / s).exists() for s in ("val", "test")):
+        errors.append("Validation/test mask files must remain in the hidden labels directory.")
+    groups = meta.get("groups")
+    if not isinstance(groups, dict) or set(groups) != {"train", "val", "test"}:
+        errors.append("meta.json: groups must contain a row-aligned list for every split.")
+        groups = {}
+    for split in ("train", "val", "test"):
+        for destination, name in ((inputs, split), (labels, f"{split} labels")):
+            frame = loaded[name].copy()
+            if "id" in frame or "sample_id" not in frame:
+                errors.append(f"{name}: expected sample_id column; legacy id is not a feature.")
+            destination[split] = frame.rename(columns={"sample_id": "id"})
+            if destination is inputs:
+                # The new loader exposes explicit group columns as features; injected metadata is not a feature.
+                destination[split].attrs["group_is_feature"] = "group" in frame.columns
+            if ("id" in destination[split] and destination[split].columns.is_unique
+                    and infer_dtype(destination[split]["id"], skipna=True) not in {"string", "empty"}):
+                errors.append(f"{name}: sample_id must be a string as generated by write_dataset.")
+        frame = inputs[split]
+        target = labels[split]
+        if any(f.columns.nlevels != 1 or not f.columns.is_unique for f in (frame, target)):
+            errors.append(f"{split}: columns must be flat and unique before metadata/label alignment.")
+            continue
+        if set(target.columns) != {"id", "y"}:
+            errors.append(f"{split} labels: expected exactly sample_id and y columns.")
+        if "y" in frame:
+            errors.append(f"{split}: inputs must not contain y; labels belong in a separate table.")
+        g = groups.get(split)
+        if (not isinstance(g, list) or len(g) != len(frame)
+                or infer_dtype(g, skipna=False) not in {"string", "integer", "empty"}):
+            errors.append(f"{split}: persisted groups must have one entry per input row.")
+        elif frame.columns.is_unique:
+            if "group" in frame and not frame["group"].eq(pd.Series(g, index=frame.index)).all():
+                errors.append(f"{split}: input group contradicts row-aligned metadata groups.")
+            frame["group"] = g
+        if kinds.get(split) == "array":
+            if set(frame.columns) - {"id", "group"}:
+                errors.append(f"{split}: array companion table must contain only sample_id.")
+            if ("id" in frame and frame.columns.is_unique
+                    and frame["id"].tolist() != [f"{split}-{i:06d}" for i in range(len(frame))]):
+                errors.append(f"{split}: array sample_id row order must match the writer's generated ordinal IDs.")
+            path = data_dir / f"{split}_inputs.npy"
+            try:
+                if not path.resolve().is_relative_to(data_dir.resolve()):
+                    raise ValueError("array outside data directory")
+                arr = np.load(path, allow_pickle=False, mmap_mode="r")
+                if (not isinstance(arr, np.ndarray) or arr.ndim < 1 or arr.shape[0] != len(frame)
+                        or not all(arr.shape[1:]) or arr.dtype.kind not in "biuf"
+                        or not np.isfinite(arr).all()):
+                    raise ValueError("invalid numeric array")
+                arrays[split] = arr
+            except (OSError, ValueError, EOFError) as exc:
+                artifacts_ok = False
+                errors.append(f"{split}: array missing/unreadable or invalid ({type(exc).__name__}).")
+        elif kinds.get(split) == "files":
+            file_errors = _file_errors(frame, split, data_dir)
+            artifacts_ok &= not file_errors
+            errors.extend(file_errors)
+        elif "path" in frame:
+            errors.append(f"{split}: path inputs require input_kind='files'.")
+        elif (data_dir / f"{split}_inputs.npy").exists():
+            errors.append(f"{split}: unexpected array artifact contradicts input_kind.")
+        if ("id" in frame and "id" in target and frame.columns.is_unique and target.columns.is_unique
+                and not _id_errors(frame, split) and not _id_errors(target, f"{split} labels")
+                and set(frame["id"]) == set(target["id"]) and "y" in target and split == "train"):
+            frame["y"] = target.set_index("id")["y"].loc[frame["id"]].to_numpy()
+    if arrays and (len(arrays) != 3 or len({a.shape[1:] for a in arrays.values()}) != 1):
+        errors.append("Arrays must have matching per-sample shape across all splits.")
+    return inputs, labels, arrays, errors, artifacts_ok
+
+
+def _file_errors(frame: pd.DataFrame, split: str, data_dir: Path) -> list[str]:
+    """Certify neutral local image files; recording decoders need a separate agreed schema."""
+    if not frame.columns.is_unique or not {"id", "path"} <= set(frame.columns):
+        return [f"{split}: files require unique sample_id and path columns."]
+    try:
+        from PIL import Image
+    except ImportError:
+        return [f"{split}: image contents NOT VERIFIED; install the declared Pillow dependency."]
+    errors = []
+    for sid, value in zip(frame["id"], frame["path"], strict=True):
+        if not isinstance(sid, str) or not isinstance(value, str):
+            errors.append(f"{split}: file identity/path must be non-null strings.")
+            continue
+        path = Path(value)
+        expected = Path("files") / split / f"{sid}{path.suffix}"
+        if (Path(sid).name != sid or path.is_absolute() or path != expected
+                or not (data_dir / path).resolve().is_relative_to(data_dir.resolve() / "files" / split)):
+            errors.append(f"{split}: input paths must be neutral relative files/<split>/<sample_id>.<ext>.")
+            continue
+        if path.suffix.lower() not in {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}:
+            errors.append(f"{split}: recording/file contents are NOT VERIFIED; only image files are validated.")
+            continue
+        try:
+            with Image.open(data_dir / path) as img:
+                img.verify()
+            with Image.open(data_dir / path) as img:
+                img.load()
+        except (OSError, ValueError, ImportError, Image.DecompressionBombError) as exc:
+            errors.append(f"{split}: image missing/unreadable ({type(exc).__name__}).")
+    return list(dict.fromkeys(errors))
 
 
 def _data_card(ws: Workspace, inputs: dict, meta: dict, checks: dict, messages: list[str]) -> str:
@@ -332,6 +500,12 @@ def _data_card(ws: Workspace, inputs: dict, meta: dict, checks: dict, messages: 
     for key in ("group_col", "time_col"):
         value = meta.get(key)
         lines.append(f"- {key}: {value if isinstance(value, str) else 'unavailable'}")
+    if isinstance(meta.get("input_kind"), dict):
+        for split in inputs:
+            kind = meta["input_kind"].get(split)
+            kind = kind if isinstance(kind, str) and kind in {"table", "array", "files"} else "unavailable"
+            lines.append(f"- {split} input kind: {kind}")
+        lines.append("- Table counts above describe identity/feature metadata; array contents are checked separately.")
     lines.extend(["", "## Validation", ""])
     for check, passed in checks.items():
         not_applicable = any(message.startswith(f"NOT APPLICABLE: {check};") for message in messages)
@@ -361,16 +535,21 @@ def validate(ws: Workspace) -> ValidationReport:
     become diagnostics; unexpected programming errors propagate.
     """
     checks = dict.fromkeys(CHECKS, False)
-    messages, inputs, meta = [], {}, {}
+    messages, inputs, meta, arrays = [], {}, {}, {}
     data_dir = workspace.ws_dir(ws) / "data"
     labels_dir = workspace.labels_dir(ws.run_id, ws.task_id)
+    new_layout = any((data_dir / name).exists() for name in (
+        "train_inputs.parquet", "train_labels.parquet", "train_labels.json",
+    ))
     paths = {
-        "train": data_dir / "train.parquet",
+        "train": data_dir / ("train_inputs.parquet" if new_layout else "train.parquet"),
         "val": data_dir / "val_inputs.parquet",
         "test": data_dir / "test_inputs.parquet",
-        "val labels": labels_dir / "val.parquet",
-        "test labels": labels_dir / "test.parquet",
+        "val labels": labels_dir / ("val_labels.parquet" if new_layout else "val.parquet"),
+        "test labels": labels_dir / ("test_labels.parquet" if new_layout else "test.parquet"),
     }
+    if new_layout:
+        paths["train labels"] = data_dir / "train_labels.parquet"
     loaded = {}
     try:
         from pyarrow import ArrowException
@@ -399,12 +578,23 @@ def validate(ws: Workspace) -> ValidationReport:
         meta = {}
         metadata_errors.append("meta.json must contain a JSON object.")
     if checks["files_present"]:
-        labels = {"train": inputs["train"], "val": loaded["val labels"], "test": loaded["test labels"]}
-        format_errors = _format_errors(inputs, labels, meta)
-        label_errors = _label_errors(labels, ws)
-        if ws.spec.prediction_format not in {"scalar", "binary_score"}:
+        layout_errors = []
+        if new_layout:
+            inputs, labels, arrays, layout_errors, artifacts_ok = _new_layout(ws, loaded, meta)
+            checks["files_present"] = artifacts_ok
+            if not artifacts_ok:
+                messages.append("FAIL files_present: dependent array/image artifacts are unreadable or not verified.")
+            if (data_dir / "train.parquet").exists():
+                layout_errors.append("Ambiguous dataset: legacy and separate-label train layouts coexist.")
+            layout_errors.extend(metadata_errors)
+        else:
+            labels = {"train": inputs["train"], "val": loaded["val labels"], "test": loaded["test labels"]}
+        format_errors = [*layout_errors, *_format_errors(inputs, labels, meta)]
+        label_errors = _label_errors(labels, ws, meta)
+        supported = {"scalar", "binary_score"} | ({"class_probs"} if new_layout else set())
+        if ws.spec.prediction_format not in supported:
             format_errors.append(
-                "Unsupported prediction format; only scalar and binary_score schemas are validated."
+                "Unsupported prediction format; scalar, binary_score and separate-label class_probs are validated."
             )
         group_errors, time_errors, notes = _split_errors(inputs, meta, metadata_errors)
         outcomes = {
@@ -413,15 +603,26 @@ def validate(ws: Workspace) -> ValidationReport:
             "time_ordered": time_errors,
             "min_sizes": _size_errors(inputs, ws),
             "label_sanity": label_errors,
-            "no_label_leak": _leak_errors(inputs, labels, not format_errors and not label_errors),
+            "no_label_leak": _leak_errors(
+                inputs, labels, not format_errors and not label_errors and all(len(f) for f in inputs.values()), arrays,
+            ),
         }
         for check, errors in outcomes.items():
             checks[check] = not errors
             messages.extend(f"FAIL {check}: {error}" for error in errors)
         messages.extend(notes)
     else:
-        messages.append("NOT VERIFIED: remaining checks require all five readable dataset tables.")
+        messages.append("NOT VERIFIED: remaining checks require all readable dataset tables.")
         messages.extend(metadata_errors)
+    if ws.spec.prediction_format in {"boxes", "masks"}:
+        messages.append(f"Unsupported prediction format '{ws.spec.prediction_format}': structured labels are not validated.")
+    for split, array in arrays.items():
+        messages.append(f"INPUT {split}: array shape={array.shape}; dtype={array.dtype}; finite values verified.")
+    if arrays:
+        messages.append(
+            "WARN: array row identity uses the writer's generated ordinal IDs; reordered array contents "
+            "cannot be detected without writer-provided provenance/checksums."
+        )
     return ValidationReport(
         ok=all(checks.values()),
         checks=checks,
