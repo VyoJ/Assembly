@@ -18,16 +18,16 @@ def _sensor_values(frame: pd.DataFrame, stream_id: str) -> pd.Series:
         raise TypeError("read_stream must return a pandas DataFrame")
     if frame.columns.nlevels != 1 or not frame.columns.is_unique:
         raise ValueError("sensor columns must be flat and unique")
-    keys = ["unit", "cycle"]
+    keys = ["entity", "time"] if {"entity", "time"} <= set(frame.columns) else ["unit", "cycle"]
     if not set(keys) <= set(frame.columns):
-        raise ValueError("missing required unit/cycle columns")
+        raise ValueError("missing required entity/time or legacy unit/cycle columns")
     if stream_id in keys:
-        raise ValueError("stream_id must not be a unit/cycle key")
+        raise ValueError(f"stream_id must not be a {'/'.join(keys)} key")
     if frame[keys].isna().any().any() or frame.duplicated(keys).any():
-        raise ValueError("unit/cycle keys must be non-missing and unique")
+        raise ValueError(f"{'/'.join(keys)} keys must be non-missing and unique")
     if stream_id in frame.columns:
         return frame[stream_id]
-    if set(frame.columns) == {*keys, "value"}:
+    if keys == ["unit", "cycle"] and set(frame.columns) == {*keys, "value"}:
         return frame["value"]
     raise ValueError(f"missing sensor column '{stream_id}' (legacy value requires only unit/cycle/value)")
 
@@ -129,6 +129,17 @@ def profile_streams(spec: TaskSpec, streams: list[StreamInfo]) -> list[StreamPro
                 reason = f"Invalid stream source: {exc}."
             else:
                 try:
+                    if isinstance(frame, pd.DataFrame) and {"record_id", "entity", "path"} <= set(frame):
+                        if (not frame.columns.is_unique or frame.columns.nlevels != 1
+                                or frame[["record_id", "entity", "path"]].isna().any().any()
+                                or frame["record_id"].duplicated().any()):
+                            raise ValueError("recording identity and paths must be non-missing and unique")
+                        profiles.append(StreamProfile(
+                            stream_id=stream.id, relevance=0.0, keep=True,
+                            reason=(f"{stream.modality}: {len(frame)} file recordings; retained; quality unassessed. "
+                                    "Waveforms are not profiled; no supervised labels are read."),
+                        ))
+                        continue
                     stats = _numeric_stats(_sensor_values(frame, stream.id))
                 except (TypeError, ValueError) as exc:
                     keep = False

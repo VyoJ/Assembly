@@ -350,3 +350,76 @@ def test_api_dispatches_to_real_implementation_when_mock_disabled(monkeypatch, s
     monkeypatch.setattr(mock, "profile_streams", forbidden)
     monkeypatch.setattr(catalog, "read_stream", lambda sid: _frame([1, 2]))
     assert api.profile_streams(spec, [_stream()]) == profiling.profile_streams(spec, [_stream()])
+
+
+@pytest.mark.parametrize("problem", [None, "duplicate", "null", "missing_sensor", "key_sensor"])
+def test_current_entity_time_tables(monkeypatch, spec, problem):
+    frame = _frame([1.0, 2.0, 3.0]).rename(columns={"unit": "entity", "cycle": "time"})
+    sid = "sensor"
+    if problem == "duplicate":
+        frame["time"] = 1
+    elif problem == "null":
+        frame.loc[0, "entity"] = None
+    elif problem == "missing_sensor":
+        frame = frame.drop(columns="sensor")
+    elif problem == "key_sensor":
+        sid = "time"
+    monkeypatch.setattr(catalog, "read_stream", lambda _: frame)
+    before = frame.copy(deep=True)
+    profile, = profiling.profile_streams(spec, [_stream(sid)])
+    assert profile.keep == (problem is None)
+    assert profile.relevance == (1.0 if problem is None else 0.0)
+    pd.testing.assert_frame_equal(frame, before)
+    if problem is None:
+        with pytest.raises(ValueError, match="missing sensor column"):
+            profiling._sensor_values(frame.rename(columns={"sensor": "value"}), "sensor")
+
+
+@pytest.mark.parametrize("problem", [None, "duplicate", "null"])
+def test_recording_indices_are_retained_without_profiling_metadata(monkeypatch, spec, problem):
+    frame = pd.DataFrame({"record_id": ["record-1", "record-2"], "entity": ["motor", "motor"],
+                          "path": ["/unused/1.mat", "/unused/2.mat"], "channel": ["DE", "DE"],
+                          "rpm": [1797, 1750], "sample_hz": [48000, 12000]})
+    if problem == "duplicate":
+        frame["record_id"] = "same"
+    elif problem == "null":
+        frame.loc[0, "path"] = None
+    monkeypatch.setattr(catalog, "read_stream", lambda _: frame)
+    profile, = profiling.profile_streams(spec, [_stream("motor4.vibration_drive_end", "vibration")])
+    assert profile.keep == (problem is None)
+    assert profile.relevance == 0.0
+    if problem is None:
+        assert "quality unassessed" in profile.reason and "mean=" not in profile.reason
+        assert "unused" not in profile.reason
+
+
+def test_real_catalog_current_table_reader(tmp_path, monkeypatch, spec):
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    folder = tmp_path / "cmapss"
+    folder.mkdir()
+    rows = [[1, i, 0, 0, 0, *[j + i for j in range(21)]] for i in range(1, 5)]
+    (folder / "train_FD001.txt").write_text("\n".join(" ".join(map(str, row)) for row in rows))
+    catalog._table.cache_clear()
+    try:
+        stream = next(s for s in catalog.list_catalog()[0] if s.id == "press3.lpc_outlet_temp")
+        assert list(catalog.read_stream(stream.id).columns) == ["entity", "time", stream.id]
+        profile, = profiling.profile_streams(spec, [stream])
+        assert profile.keep and profile.relevance == 1.0 and "mean=3.5" in profile.reason
+    finally:
+        catalog._table.cache_clear()
+
+
+def test_real_catalog_recordings_do_not_become_numeric_sensor_tables(tmp_path, monkeypatch, spec):
+    from core.config import settings
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    (tmp_path / "cwru").mkdir()
+    stream = next(s for s in catalog.list_catalog()[0] if s.id == "motor4.vibration_drive_end")
+    frame = catalog.read_stream(stream.id)
+    assert {"record_id", "entity", "path", "channel", "sample_hz"} <= set(frame)
+    assert "fault" not in frame and "fault_size_in" not in frame
+    profile, = profiling.profile_streams(spec, [stream])
+    assert profile.keep and profile.relevance == 0.0 and "quality unassessed" in profile.reason
+    assert "mean=" not in profile.reason

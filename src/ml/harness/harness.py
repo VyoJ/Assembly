@@ -332,20 +332,55 @@ def _example_input(X):
 
     if isinstance(X, pd.DataFrame):
         num = X.select_dtypes("number")
-        return X.head(8) if num.shape[1] == X.shape[1] else None
-    return np.asarray(X)[:8]
+        return X.iloc[:8].copy() if num.shape[1] == X.shape[1] else None
+    return np.asarray(X)[:8].copy()
 
 
 def save_model(model, **kwargs) -> None:
     """Save the deployable model to EXP_DIR/model (ml.models.export: joblib / ONNX / YOLO).
     The model must take the same X that load_val_inputs() returns. kwargs (threshold, classes, ...) are kept
     in model.json; pass example_input=... to override the export example."""
-    from ml.models.export import save_model as _save
+    import shutil
+    import tempfile
 
+    from ml.models import export
+
+    if not callable(getattr(model, "predict", None)) and not export._is_torch(model):
+        raise TypeError("save_model requires a model with predict() or a torch nn.Module")
+    X = _load_inputs("train")  # no labels are needed to export the input schema
+    meta = _meta()
     example = kwargs.pop("example_input", None)
     if example is None:
-        example = _example_input(load_train()[0])
-    _save(model, str(EXP_DIR / "model"), example_input=example, **kwargs)
+        example = _example_input(X)
+    kwargs.setdefault("prediction_format", task()["prediction_format"])
+    kwargs.setdefault("input_kind", meta["input_kind"]["train"])
+    if hasattr(X, "columns"):
+        kwargs.setdefault("feature_columns", [str(c) for c in X.columns])
+        kwargs.setdefault("feature_dtypes", {str(c): str(t) for c, t in X.dtypes.items()})
+    else:
+        kwargs.setdefault("input_shape", list(X.shape[1:]))
+        kwargs.setdefault("input_dtype", str(X.dtype))
+    if meta.get("classes") is not None:
+        kwargs.setdefault("classes", meta["classes"])
+    EXP_DIR.mkdir(parents=True, exist_ok=True)
+    # Export in isolation so a failed serializer cannot corrupt an earlier saved model.
+    with tempfile.TemporaryDirectory(prefix=".save-model-", dir=EXP_DIR) as staging:
+        staging = Path(staging)
+        export.save_model(model, str(staging / "model"), example_input=example, **kwargs)
+        previous = EXP_DIR / f"{staging.name}.previous"  # survive staging cleanup if rollback also fails
+        if (EXP_DIR / "model").exists():
+            (EXP_DIR / "model").rename(previous)
+        try:
+            (staging / "model").rename(EXP_DIR / "model")
+        except OSError:
+            if previous.exists():
+                try:
+                    previous.rename(EXP_DIR / "model")
+                except OSError as exc:
+                    raise OSError(f"Model publication and rollback failed; previous model preserved at {previous}") from exc
+            raise
+        if previous.exists():
+            shutil.rmtree(previous)
     print(f"saved model to {EXP_DIR.name}/model")
 
 
@@ -359,47 +394,112 @@ def _to_records(fmt: str, preds, sids: list[str]):
     import pandas as pd
 
     n = len(sids)
-    if fmt in ("boxes", "masks"):
+    if fmt == "masks":
+        raise ValueError("masks: output paths, image dimensions and instance semantics are not yet validated")
+    if fmt == "boxes":
         preds = list(preds)
         if len(preds) != n:
             raise ValueError(f"predict_fn returned {len(preds)} items for {n} images")
-        if fmt == "boxes":
-            out = {}
-            for sid, boxes in zip(sids, preds, strict=True):
-                boxes = np.asarray(boxes, dtype=float).reshape(-1, 6) if len(boxes) else np.zeros((0, 6))
-                out[sid] = boxes.tolist()
-            return out
-        return {sid: [{"mask": str(p["mask"]), "score": float(p["score"])} for p in items]
-                for sid, items in zip(sids, preds, strict=True)}
+        out = {}
+        for sid, boxes in zip(sids, preds, strict=True):
+            boxes = np.asarray(boxes) if len(boxes) else np.zeros((0, 6))
+            if (boxes.ndim != 2 or boxes.shape[1] != 6 or boxes.dtype.kind not in "iuf"
+                    or not np.isfinite(boxes).all() or (boxes[:, :4] < 0).any()
+                    or (boxes[:, 2:4] <= boxes[:, :2]).any()
+                    or ((boxes[:, 4] < 0) | (boxes[:, 4] > 1)).any()
+                    or (boxes[:, 5] < 0).any() or (boxes[:, 5] != np.floor(boxes[:, 5])).any()):
+                raise ValueError("boxes: expected finite [x1,y1,x2,y2,score,class] rows with valid geometry")
+            out[sid] = boxes.tolist()
+        return out
 
-    arr = np.asarray(preds, dtype=float)
     if fmt == "class_probs":
-        if arr.ndim != 2 or arr.shape[0] != n:
+        vocabulary = classes()
+        if (not isinstance(vocabulary, list) or len(vocabulary) < 2
+                or any(not isinstance(c, (str, int, float)) or isinstance(c, bool) for c in vocabulary)
+                or any(isinstance(c, float) and not math.isfinite(c) for c in vocabulary)
+                or len({json.dumps(c) for c in vocabulary}) != len(vocabulary)):
+            raise ValueError("class_probs: metadata must define a unique finite vocabulary of at least two classes")
+    if isinstance(preds, (pd.Series, pd.DataFrame)):
+        if isinstance(preds, pd.DataFrame):
+            if not preds.columns.is_unique:
+                raise ValueError("predict_fn returned duplicate prediction columns")
+            if "sample_id" in preds:
+                preds = preds.set_index("sample_id")
+        if preds.index.name is not None or not preds.index.equals(pd.RangeIndex(len(preds))):
+            _check_prediction_ids(preds.index.tolist(), len(preds))
+            if set(preds.index) != set(sids):
+                raise ValueError("predict_fn sample_ids do not match the input IDs")
+            preds = preds.loc[sids]
+        if fmt == "class_probs" and isinstance(preds, pd.DataFrame):
+            columns = [f"p_{i}" for i in range(len(vocabulary))]
+            if not preds.columns.equals(pd.RangeIndex(len(columns))):
+                if set(preds.columns) != set(columns):
+                    raise ValueError("class_probs: expected p_0 .. p_<n_classes-1> columns")
+                preds = preds[columns]
+    arr = np.asarray(preds)
+    if arr.dtype.kind not in "iuf":
+        raise ValueError(f"{fmt}: predictions must be real numeric values without coercion")
+    if not np.isfinite(arr).all():
+        raise ValueError(f"{fmt}: predictions contain NaN or inf")
+    if fmt == "class_probs":
+        if arr.shape != (n, len(vocabulary)):
             raise ValueError(f"class_probs: predict_fn must return an [n_rows, n_classes] array, got shape {arr.shape}")
+        _check_probabilities(arr, normalized=True)
         df = pd.DataFrame(arr, columns=[f"p_{i}" for i in range(arr.shape[1])])
     else:
         if fmt == "binary_score" and arr.ndim == 2 and arr.shape[1] == 2:
+            _check_probabilities(arr, normalized=True)
             arr = arr[:, 1]  # predict_proba output: keep P(positive)
-        arr = arr.reshape(-1) if arr.ndim == 2 and 1 in arr.shape else arr
+        arr = arr[:, 0] if arr.ndim == 2 and arr.shape[1] == 1 else arr
         if arr.ndim != 1 or arr.shape[0] != n:
             raise ValueError(f"{fmt}: predict_fn must return one number per row ({n}), got shape {arr.shape}")
+        if fmt == "binary_score":
+            _check_probabilities(arr)
+        elif fmt != "scalar":
+            raise ValueError(f"unsupported prediction format: {fmt}")
         df = pd.DataFrame({"pred" if fmt == "scalar" else "score": arr})
-    if not np.isfinite(arr).all():
-        raise ValueError(f"{fmt}: predictions contain NaN or inf")
     df.insert(0, "sample_id", sids)
     return df
 
 
-def _latency_ms(predict_fn, X, n: int = 50) -> tuple[float, float]:
+def _check_prediction_ids(sids: list[str], n: int) -> None:
+    if (len(sids) != n or not n or any(not isinstance(s, str) or not s.strip() for s in sids)
+            or len(set(sids)) != n):
+        raise ValueError("sample_ids must contain one unique non-empty string per input row")
+
+
+def _check_probabilities(arr, *, normalized: bool = False) -> None:
+    import numpy as np
+
+    if ((arr < 0) | (arr > 1)).any() or normalized and not np.allclose(arr.sum(axis=1), 1, rtol=0, atol=1e-6):
+        raise ValueError("probabilities must be in [0,1] and probability rows must sum to one")
+
+
+def _sync_inference() -> None:
+    import sys
+
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        elif torch.backends.mps.is_available():
+            torch.mps.synchronize()
+
+
+def _latency_ms(predict_fn, X, fmt: str, sids: list[str], n: int = 50) -> tuple[float, float]:
     import numpy as np
 
     total = len(X)
     idx = np.linspace(0, total - 1, min(n, total)).astype(int)
     times = []
     for i in idx:
+        row = _rows(X, int(i))
+        _sync_inference()
         t0 = time.perf_counter()
-        predict_fn(_rows(X, int(i)))
+        preds = predict_fn(row)
+        _sync_inference()
         times.append((time.perf_counter() - t0) * 1000)
+        _to_records(fmt, preds, [sids[int(i)]])
     return float(np.percentile(times, 50)), float(np.percentile(times, 95))
 
 
@@ -408,24 +508,58 @@ def finish(predict_fn, *, threshold: float | None = None) -> None:
     per-sample latency, and write {val,test}_predictions + timings.json + predict_meta.json to EXP_DIR.
     The runner scores them against the hidden labels."""
     import sys
+    import tempfile
+
+    import pandas as pd
 
     fmt = task()["prediction_format"]
-    EXP_DIR.mkdir(parents=True, exist_ok=True)
-    for split in ("val", "test"):
-        X, sids = _load_inputs(split), ids(split)
-        records = _to_records(fmt, predict_fn(X), sids)
-        if isinstance(records, dict):
-            (EXP_DIR / f"{split}_predictions.json").write_text(json.dumps(records))
-        else:
-            records.to_parquet(EXP_DIR / f"{split}_predictions.parquet", index=False)
-        print(f"wrote {split} predictions ({len(sids)} samples)")
+    if not callable(predict_fn):
+        raise TypeError("finish requires a callable predictor")
+    if threshold is not None and (isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+                                  or not math.isfinite(threshold) or not 0 <= threshold <= 1):
+        raise ValueError("threshold must be a finite number in [0,1]")
+    outputs, seen, batch_ms = {}, set(), {}
+    val = load_val_inputs()
+    for split, X in (("val", val), ("test", load_test_inputs())):
+        sids = ids(split)
+        _check_prediction_ids(sids, len(X))
+        if seen.intersection(sids):
+            raise ValueError("validation and test sample_ids overlap")
+        seen.update(sids)
+        if isinstance(X, pd.DataFrame) and X.index.tolist() != sids:
+            raise ValueError(f"{split}: input index order does not match harness.ids()")
+        _sync_inference()
+        t0 = time.perf_counter()
+        preds = predict_fn(X)
+        _sync_inference()
+        batch_ms[split] = (time.perf_counter() - t0) * 1000
+        outputs[split] = _to_records(fmt, preds, sids)
 
-    p50, p95 = _latency_ms(predict_fn, _load_inputs("val"))
-    timings = {"p50_latency_ms": round(p50, 3), "p95_latency_ms": round(p95, 3)}
+    p50, p95 = _latency_ms(predict_fn, val, fmt, ids("val"))
+    timings = {"p50_latency_ms": p50, "p95_latency_ms": p95,
+               "measurement": "single-row validation calls after full-split inference; input slicing excluded",
+               "latency_samples": min(50, len(val)), "batch_inference_ms": batch_ms,
+               "synchronization": "loaded torch CUDA/MPS device when available; otherwise synchronous CPU"}
     if "torch" in sys.modules:
         torch = sys.modules["torch"]
         if torch.cuda.is_available():
             timings["peak_mem_gb"] = round(torch.cuda.max_memory_allocated() / 1e9, 2)
-    (EXP_DIR / "timings.json").write_text(json.dumps(timings))
-    (EXP_DIR / "predict_meta.json").write_text(json.dumps({"threshold": threshold}))
+            timings["peak_mem_scope"] = "torch allocator high-water mark for this process"
+    EXP_DIR.mkdir(parents=True, exist_ok=True)
+    # Validate both splits and complete all writes before publishing any prediction artifact.
+    with tempfile.TemporaryDirectory(prefix=".finish-", dir=EXP_DIR) as staging:
+        staging = Path(staging)
+        for split, records in outputs.items():
+            if isinstance(records, dict):
+                (staging / f"{split}_predictions.json").write_text(json.dumps(records, allow_nan=False))
+            else:
+                records.to_parquet(staging / f"{split}_predictions.parquet", index=False)
+        (staging / "timings.json").write_text(json.dumps(timings, allow_nan=False))
+        (staging / "predict_meta.json").write_text(json.dumps({"threshold": threshold}, allow_nan=False))
+        for path in staging.iterdir():
+            path.replace(EXP_DIR / path.name)
+    for split, records in outputs.items():
+        suffix = ".parquet" if isinstance(records, dict) else ".json"
+        (EXP_DIR / f"{split}_predictions{suffix}").unlink(missing_ok=True)
+        print(f"wrote {split} predictions ({len(records)} samples)")
     print(f"p50_latency_ms={p50:.3f} p95_latency_ms={p95:.3f}")
