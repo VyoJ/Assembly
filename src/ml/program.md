@@ -25,8 +25,9 @@ otherwise it's discarded and the next experiment starts from the best `train.py`
 4. Size training with `harness.time_left()`: stop training before it hits 0. (A later full-train
    stage reruns your best `train.py` with a bigger budget, so budget-aware code automatically trains longer.)
 5. `train.py` MUST end by calling `harness.save_model(model)` and then `harness.finish(predict_fn)`.
-6. **The saved model is what gets deployed.** It must take the raw feature columns exactly as
-   `harness.load_val_inputs()` returns them and output the prediction directly. Put any preprocessing
+6. **The saved model is what gets deployed.** It must take `X` exactly as `harness.load_val_inputs()`
+   returns it (for file inputs: one loaded image / signal with a batch dimension) and output the
+   prediction directly. Put any preprocessing
    (scaling, imputation, feature selection) INSIDE the model: an sklearn `Pipeline`, or inside the torch
    `nn.Module`. Torch models must output probabilities, not logits, for `binary_score` / `class_probs`.
 7. You have no validation labels. If you need early stopping, threshold tuning, or a self-check,
@@ -35,17 +36,25 @@ otherwise it's discarded and the next experiment starts from the best `train.py`
 8. Crashes, timeouts and malformed predictions are scored as failures and discarded.
 
 ## Data and predictions
-- `X, y = harness.load_train()`: `X` is a DataFrame of features indexed by `sample_id`; `y` is a Series
-  with the same index. `harness.load_val_inputs()` / `load_test_inputs()` return `X` only.
-- `predict_fn(X)` gets a DataFrame like those and must return, per `prediction_format`:
+- `X, y = harness.load_train()`; `harness.load_val_inputs()` / `load_test_inputs()` return `X` only.
+  `X` depends on what `prepare.py` wrote (`data_card.md` says which):
+  - **table**: DataFrame of features indexed by `sample_id`
+  - **files** (images, recordings): DataFrame indexed by `sample_id` with an absolute `path` column; read
+    them with `harness.load_image(path)` / `harness.load_signal(path)`
+  - **array** (windows, spectrograms): a numpy array; `harness.ids(split)` gives the matching `sample_id`s
+  `y` is a Series indexed by `sample_id`. Class labels are indices; names are in `harness.classes()`.
+  `harness.groups(split)` gives the group (e.g. machine unit) of each sample.
+- `predict_fn(X)` gets the same kind of `X` and must return, per `prediction_format`:
   - `scalar`: one number per row
   - `binary_score`: one score in [0, 1] per row (higher = more likely positive); pass the decision
     threshold as `harness.finish(predict_fn, threshold=t)`. recall / precision / false_alarm_rate are
     measured at that threshold.
-  - `class_probs`: an `[n_rows, n_classes]` array of probabilities
-  - `boxes`: for each image, a list of `[x1, y1, x2, y2, score, class]`
+  - `class_probs`: an `[n_rows, n_classes]` array of probabilities, columns in `harness.classes()` order
+  - `boxes`: for each image, a list of `[x1, y1, x2, y2, score, class]` (an empty list if none)
 - `scalar` early-warning metrics alarm when the predicted value is `<= early_warning_horizon`
   (see `data/meta.json`).
+- `ml.models.selfcheck.selfcheck(format, y_true, y_pred, metric_names)` computes the exact scorer metrics
+  on your internal split.
 
 ## How to work
 - **Experiment 0:** write a simple, fast, robust baseline. Get a valid score first.

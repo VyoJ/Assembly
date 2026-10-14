@@ -74,20 +74,20 @@ Samu + Andres implement these in `src/ml/harness/harness.py`; Aryan's code and `
 
 `ml.models.selfcheck.selfcheck(fmt, y_true, y_pred, metrics)` gives `train.py` the exact scorer definitions for internal checks.
 
-## Status (Aryan's part, 14 Oct)
+## Status (14 Oct, branch `feature/ml-integration` = ml-data + ml-profiling-validation + runner/scoring/packaging)
 
-Done and tested (`tests/test_runner.py`, against stand-in scripts that write the layout above directly):
-- `scoring.compute_metrics`: all formats (scalar, binary, class_probs, boxes, masks) + latency, matched by `sample_id`;
-  bad predictions → `invalid_output` with a message the agent can act on.
-- `runner.py`: `run_prepare`, `run_experiment` (subprocess, secrets stripped, hard kill at 2x budget + 60 s,
-  crash / timeout / invalid_output, live `key=value` progress), `full_train`, `final_test`.
-- `models/export.py` + `package.py`: joblib (sklearn / XGBoost / LightGBM), torch → ONNX, YOLO → ONNX; ONNX Runtime
-  prefers MIGraphX → ROCm → CPU. `Predictor.predict(sample)` returns the same keys as the mock; `{"replay": i}` replays
-  held-out test rows for the live demo.
-- `program.md` (deployable-model rule, prediction formats, progress lines), recipes `xgb_baseline.py`,
-  `threshold_calibration.py`; `models/selfcheck.py`; `models/gpu_stats.py` + `docs/datasets.md` copied from `training`.
+Works end to end on real C-MAPSS (`specs/rul_example_prepare.py` → validators → runner → full train → final test →
+package): HistGradientBoosting on 30-cycle window features, val RMSE 13.0, hidden test RMSE 15.2, both KPIs pass.
 
-Blocked on: `harness.py` and `validators.validate` (the runner calls both), and real C-MAPSS data.
+- **Samu:** catalog for tables / signals / images / video, `write_dataset` + loaders (table, files, array inputs).
+- **Andres:** `validators.py` (7 checks on feature tables), `profiling.py`. Integration adds an adapter that reads the
+  harness layout (`sample_id`, `train_labels.parquet`, groups from `meta.json`); the older flat layout still works for
+  the existing tests. Files / arrays / class_probs / boxes get a generic subset of checks (files, groups, sizes, labels).
+- **Aryan:** runner, scoring (all formats), export + package; `harness.save_model` / `finish` (all formats, latency,
+  threshold); predictor handles tables, files (YOLO boxes + classification), arrays, and replays the winner's scored
+  test predictions (`{"replay": i}`) for the live demo.
+
+Next: validators for image / class_probs tasks (Andres), MVTec end to end with YOLO (Samu + Aryan), GPU box.
 
 ## Timeline (submission 18 Oct; check the exact lablab deadline)
 

@@ -149,3 +149,168 @@ def test_compute_metrics_formats(tmp_path):
     pd.DataFrame({"sample_id": ids[:3], "p_0": probs[:, 0], "p_1": probs[:, 1]}).to_parquet(tmp_path / "pc.parquet")
     m = scoring.compute_metrics("class_probs", str(tmp_path / "pc"), str(tmp_path / "cl"), ["accuracy", "min_class_recall"])
     assert m["accuracy"] == pytest.approx(2 / 3) and m["min_class_recall"] == 0.5
+
+
+# ---------------------------------------------------------------- the real thing: harness + validators, no stubs
+
+REAL_PREPARE = """
+import harness, numpy as np, pandas as pd
+rng = np.random.default_rng(1)
+rows = []
+for unit in range(40):
+    life = int(rng.integers(120, 220))
+    for t in range(1, life + 1):
+        wear = t / life
+        rows.append({"unit": unit, "time": t, "s1": 5 * wear + rng.normal(0, .2), "s2": rng.normal(), "rul": life - t})
+df = pd.DataFrame(rows)
+units = rng.permutation(40)
+split = {"train": units[:28], "val": units[28:34], "test": units[34:]}
+parts, groups = {}, {}
+for name, us in split.items():
+    part = df[df.unit.isin(us)]
+    parts[name] = (part[["time", "s1", "s2"]], part["rul"].clip(upper=125))
+    groups[name] = part["unit"].tolist()
+harness.write_dataset(parts["train"], parts["val"], parts["test"], groups=groups,
+                      meta={"split": "group", "group_col": "unit", "early_warning_horizon": 30})
+"""
+
+REAL_TRAIN = """
+import harness
+from sklearn.ensemble import HistGradientBoostingRegressor
+X, y = harness.load_train()
+model = HistGradientBoostingRegressor(max_iter=200).fit(X, y)
+print("epoch=1 loss=1.0")
+harness.save_model(model)
+harness.finish(model.predict)
+"""
+
+
+def test_real_harness_validators_runner_package():
+    spec = TaskSpec(
+        id="real_rul", name="real", rationale="", framing="", input_streams=[], label_sources=[],
+        target_definition="", prediction_format="scalar", primary_metric="rmse",
+        metrics=["rmse", "nasa_score", "early_warning_recall", "early_warning_far", "p95_latency_ms"],
+        kpis=[KPI(metric="rmse", op="<=", threshold=40.0)], split_strategy="by unit", time_budget_s=60,
+    )
+    ws = workspace.create_workspace("test-real", spec)
+    report = runner.run_prepare(ws, REAL_PREPARE)
+    assert report.ok, report.messages
+    assert "Installed packages" in (Path(ws.path) / "data_card.md").read_text()
+
+    result = runner.run_experiment(ws, REAL_TRAIN, {"description": "hgb baseline"})
+    assert result.status == "keep", result.log_tail
+    assert result.all_kpis_passed and result.metrics["p95_latency_ms"] > 0
+
+    runner.full_train(ws, 1.5)
+    assert runner.final_test(ws).passed
+    pred = package.load_predictor(package.package(ws))
+    replayed = pred.predict({"replay": 0})
+    assert replayed["source"] == "replay" and "value" in replayed
+    live = pred.predict({"time": 150, "s1": 4.9, "s2": 0.0})
+    assert live["value"] < 60 and "latency_ms" in live
+
+
+def test_real_validators_catch_group_leak():
+    spec = TaskSpec(
+        id="leaky", name="leaky", rationale="", framing="", input_streams=[], label_sources=[],
+        target_definition="", prediction_format="scalar", primary_metric="rmse", metrics=["rmse"],
+        kpis=[KPI(metric="rmse", op="<=", threshold=40.0)], split_strategy="by unit", time_budget_s=60,
+    )
+    ws = workspace.create_workspace("test-real", spec)
+    leaky = REAL_PREPARE.replace('"val": units[28:34]', '"val": units[20:34]')  # units 20-27 in train AND val
+    report = runner.run_prepare(ws, leaky)
+    assert not report.ok and not report.checks["group_disjoint"]
+    assert any("overlap" in m for m in report.messages)
+
+
+# ---------------------------------------------------------------- non-tabular inputs: waveforms (array) and images (files)
+
+ARRAY_PREPARE = """
+import harness, numpy as np
+rng = np.random.default_rng(2)
+def make(n, start):
+    y = rng.integers(0, 3, n)                       # 3 fault classes
+    t = np.linspace(0, 1, 256)
+    W = np.stack([np.sin(2 * np.pi * (5 + 10 * c) * t) + rng.normal(0, .3, 256) for c in y])
+    return W.astype("float32"), ["normal", "inner_race", "ball"][0:3] and [["normal", "inner_race", "ball"][c] for c in y], \\
+        [f"rec{start + i // 10}" for i in range(n)]
+(Xtr, ytr, gtr), (Xva, yva, gva), (Xte, yte, gte) = make(300, 0), make(90, 100), make(90, 200)
+harness.write_dataset((Xtr, ytr), (Xva, yva), (Xte, yte), groups={"train": gtr, "val": gva, "test": gte},
+                      meta={"split": "group"})
+"""
+
+ARRAY_TRAIN = """
+import harness, numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import FunctionTransformer
+spectrum = FunctionTransformer(lambda W: np.abs(np.fft.rfft(W, axis=1))[:, :64])
+X, y = harness.load_train()
+model = make_pipeline(spectrum, LogisticRegression(max_iter=500)).fit(X, y.to_numpy())
+harness.save_model(model)
+harness.finish(model.predict_proba)
+"""
+
+FILES_PREPARE = """
+import harness, numpy as np
+from pathlib import Path
+from PIL import Image
+rng = np.random.default_rng(3)
+out = Path("raw_images"); out.mkdir(exist_ok=True)
+def make(n, start):
+    paths, ys = [], []
+    for i in range(n):
+        defect = int(rng.random() < 0.4)
+        img = (rng.random((32, 32)) * 60).astype("uint8")
+        if defect:
+            img[8:20, 8:20] = 255                     # bright scratch
+        p = out / f"part{start + i}.png"; Image.fromarray(img).save(p)
+        paths.append(str(p)); ys.append(defect)
+    return paths, ys
+tr, va, te = make(120, 0), make(40, 1000), make(40, 2000)
+harness.write_dataset(tr, va, te, meta={"split": "random"})
+"""
+
+FILES_TRAIN = """
+import harness, numpy as np
+from sklearn.linear_model import LogisticRegression
+def feats(X):
+    return np.stack([[harness.load_image(p).astype(float).max(), harness.load_image(p).astype(float).mean()] for p in X["path"]])
+X, y = harness.load_train()
+clf = LogisticRegression().fit(feats(X), y.to_numpy())
+harness.save_model(clf, example_input=feats(X.head(4)))
+harness.finish(lambda X: clf.predict_proba(feats(X))[:, 1], threshold=0.5)
+"""
+
+
+def _spec(task_id: str, fmt: str, primary: str, kpi: KPI) -> TaskSpec:
+    return TaskSpec(
+        id=task_id, name=task_id, rationale="", framing="", input_streams=[], label_sources=[],
+        target_definition="", prediction_format=fmt, primary_metric=primary, metrics=[primary, "p95_latency_ms"],
+        kpis=[kpi], split_strategy="", time_budget_s=60,
+    )
+
+
+def test_waveform_array_inputs_class_probs_end_to_end():
+    ws = workspace.create_workspace("test-array", _spec("fault", "class_probs", "macro_f1",
+                                                        KPI(metric="accuracy", op=">=", threshold=0.9)))
+    report = runner.run_prepare(ws, ARRAY_PREPARE)
+    assert report.ok, report.messages
+    result = runner.run_experiment(ws, ARRAY_TRAIN, {"description": "fft + logreg"})
+    assert result.status == "keep" and result.all_kpis_passed, result.log_tail
+    assert runner.final_test(ws).passed
+    pred = package.load_predictor(package.package(ws))
+    out = pred.predict({"replay": 1})
+    assert out["label"] in ("normal", "inner_race", "ball") and len(out["probs"]) == 3
+
+
+def test_image_file_inputs_binary_end_to_end():
+    ws = workspace.create_workspace("test-files", _spec("defect", "binary_score", "auroc",
+                                                        KPI(metric="recall", op=">=", threshold=0.9)))
+    report = runner.run_prepare(ws, FILES_PREPARE)
+    assert report.ok, report.messages
+    result = runner.run_experiment(ws, FILES_TRAIN, {"description": "brightness logreg"})
+    assert result.status == "keep" and result.all_kpis_passed, result.log_tail
+    assert runner.final_test(ws).passed
+    pred = package.load_predictor(package.package(ws))
+    assert pred.predict({"replay": 0})["source"] == "replay"

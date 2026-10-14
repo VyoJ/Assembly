@@ -10,6 +10,7 @@ out_dir/
 """
 
 import json
+import pickle
 import shutil
 from pathlib import Path
 
@@ -76,7 +77,8 @@ def _tree_or_sklearn_to_onnx(model, example: np.ndarray, path: Path) -> bool:
 
 def save_model(model, out_dir: str, example_input=None, **kwargs) -> str:
     """ultralytics YOLO -> its own ONNX export (+ .pt); torch nn.Module -> ONNX (TorchScript fallback);
-    sklearn / xgboost / lightgbm / anything picklable -> joblib (+ ONNX if a converter is installed).
+    sklearn / xgboost / lightgbm / anything picklable -> joblib, or cloudpickle when it holds lambdas
+    (+ ONNX if a converter is installed).
     kwargs (e.g. feature_columns, threshold, classes) go into model.json."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -118,8 +120,16 @@ def save_model(model, out_dir: str, example_input=None, **kwargs) -> str:
     else:
         import joblib
 
-        joblib.dump(model, out / "model.joblib")
-        info.update(kind="joblib", file="model.joblib")
+        try:
+            joblib.dump(model, out / "model.joblib")
+            info.update(kind="joblib", file="model.joblib")
+        except (pickle.PicklingError, AttributeError, TypeError):
+            # lambdas / locally defined functions inside the model (e.g. a FunctionTransformer): pickle by value
+            import cloudpickle
+
+            (out / "model.joblib").unlink(missing_ok=True)
+            (out / "model.pkl").write_bytes(cloudpickle.dumps(model))
+            info.update(kind="cloudpickle", file="model.pkl")
         if example is not None and example.ndim == 2 and _tree_or_sklearn_to_onnx(model, example, out / "model.onnx"):
             info["onnx"] = "model.onnx"
 
@@ -154,7 +164,7 @@ class SavedModel:
         return np.asarray(self.obj.predict(X))
 
     def predict_proba(self, X):
-        if self.kind == "joblib" and hasattr(self.obj, "predict_proba"):
+        if self.kind in ("joblib", "cloudpickle") and hasattr(self.obj, "predict_proba"):
             return np.asarray(self.obj.predict_proba(X))
         return None
 
@@ -192,6 +202,8 @@ def load_saved(path: str) -> SavedModel:
         import torch
 
         return SavedModel(p, info, torch.jit.load(str(p / info["file"])))
+    if kind == "cloudpickle":
+        return SavedModel(p, info, pickle.loads((p / info["file"]).read_bytes()))
     import joblib
 
     return SavedModel(p, info, joblib.load(p / info["file"]))
