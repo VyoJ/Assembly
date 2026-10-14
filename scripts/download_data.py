@@ -9,6 +9,7 @@ Layout this produces:
     uv run python scripts/download_data.py                 # everything
     uv run python scripts/download_data.py --only cmapss
     uv run python scripts/download_data.py --only cmapss --cmapss-zip ~/Downloads/turbofan.zip
+    uv run python scripts/download_data.py --only mvtec --mvtec-tar ~/Downloads/metal_nut.tar.xz
 """
 
 import argparse
@@ -83,12 +84,22 @@ def cwru() -> None:
     print(f"ok    CWRU ({len(src['records'])} recordings) -> {dest}")
 
 
-def mvtec() -> None:
+def mvtec(tar_path: str | None = None) -> None:
+    """MVTec AD needs the license form at mvtec.com; pass the downloaded metal_nut.tar.xz with --mvtec-tar."""
+    import tarfile
+
     dest = settings.data_dir / "mvtec" / "metal_nut"
     if (dest / "train").exists():
         print(f"ok    MVTec metal_nut already in {dest}")
         return
-    print(f"TODO  MVTec AD needs the license form at mvtec.com; extract metal_nut into {dest}")
+    if not tar_path:
+        print(f"TODO  MVTec AD: accept the license at mvtec.com, then --mvtec-tar <metal_nut.tar.xz> (-> {dest})")
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(Path(tar_path).expanduser()) as tf:
+        tf.extractall(dest.parent, filter="data")  # "data" filter rejects absolute paths and ../
+    n = sum(1 for _ in dest.rglob("*.png"))
+    print(f"ok    MVTec metal_nut ({n} png) -> {dest}")
 
 
 def yolo_weights() -> None:
@@ -115,10 +126,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--only", choices=list(STEPS), action="append")
     parser.add_argument("--cmapss-zip", help="use an already downloaded NASA turbofan zip")
+    parser.add_argument("--mvtec-tar", help="the metal_nut.tar.xz downloaded from mvtec.com")
     args = parser.parse_args()
     print(f"data dir: {settings.data_dir}")
     for name in args.only or STEPS:
-        STEPS[name](args.cmapss_zip) if name == "cmapss" else STEPS[name]()
+        if name == "cmapss":
+            STEPS[name](args.cmapss_zip)
+        elif name == "mvtec":
+            STEPS[name](args.mvtec_tar)
+        else:
+            STEPS[name]()
 
 
 if __name__ == "__main__":

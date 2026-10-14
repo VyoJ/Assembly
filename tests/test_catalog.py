@@ -51,6 +51,7 @@ def test_signal_stream_and_record_labels():
     labels = catalog.read_labels("bearing_inspections")
     assert set(labels["fault"]) == {"normal", "inner_race", "ball", "outer_race"}
     assert set(labels["record_id"]) == set(rec["record_id"])
+    assert not rec["record_id"].str.contains(r"/\d+$").any()  # not the CWRU file number
     assert "16 recordings" in catalog.peek_stream("motor4.vibration_drive_end", n=2)
 
 
@@ -81,6 +82,7 @@ def fake_mvtec(tmp_path, monkeypatch):
 def test_image_stream_and_annotations(fake_mvtec):
     idx = catalog.read_stream("line3.cam_top")
     assert len(idx) == 6 and sorted(idx["frame_idx"]) == list(range(6))
+    assert not idx["record_id"].str.contains("good|scratch|train|test").any()  # ids don't leak labels
     assert catalog.load_image(idx["path"].iloc[0]).shape == (8, 8, 3)
     ann = catalog.read_labels("qc_inspections")
     assert ann["defective"].sum() == 2

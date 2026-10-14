@@ -103,16 +103,21 @@ def _synthetic(name: str, grid: pd.DataFrame) -> np.ndarray:
 def _signal_index(source_id: str, cfg: dict, channel: str, with_labels: bool = False) -> pd.DataFrame:
     root, rows = _path(cfg), []
     hidden = {"file"} | (set() if with_labels else set(cfg.get("label_fields", [])))
-    for rec in cfg["records"]:
+    for i, rec in zip(_neutral_order(len(cfg["records"])), cfg["records"], strict=True):
         meta = {k: v for k, v in rec.items() if k not in hidden}
         rows.append({
-            "record_id": f"{source_id}/{Path(rec['file']).stem}",
+            "record_id": f"{source_id}/rec{i:04d}",
             "entity": cfg.get("entity", source_id),
             "path": str(root / rec["file"]),
             "channel": channel,
             **meta,
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows).sort_values("record_id").reset_index(drop=True)
+
+
+def _neutral_order(n: int) -> np.ndarray:
+    """A fixed shuffle used for record ids, so an id never hints at the file name, folder or label."""
+    return np.argsort(np.random.default_rng(0).permutation(n))
 
 
 def load_signal(path: str, channel: str | None = None) -> np.ndarray:
@@ -157,19 +162,18 @@ def _image_index(source_id: str, cfg: dict) -> pd.DataFrame:
     Generic layout: <label>/*.png or a flat folder."""
     root, rows = _path(cfg), []
     files = sorted(p for p in root.rglob("*") if p.suffix.lower() in IMAGE_EXT and "ground_truth" not in p.parts)
-    for p in files:
+    # The fixed shuffle is both the neutral id and the replay order of the live camera feed (mixes good and
+    # defective parts). Folder names (= labels) only come back through read_labels.
+    for i, p in zip(_neutral_order(len(files)), files, strict=True):
         rel = p.relative_to(root).parts
         rows.append({
-            "record_id": f"{source_id}/{'_'.join(rel[:-1] + (p.stem,))}",
+            "record_id": f"{source_id}/img{i:05d}",
             "entity": cfg.get("entity", source_id),
+            "frame_idx": int(i),
             "path": str(p),
             "source_split": rel[0] if cfg.get("layout") == "mvtec" else None,
         })
-    df = pd.DataFrame(rows)
-    # Replay order for the live camera feed: a fixed shuffle, so the "stream" mixes good and defective parts.
-    order = np.random.default_rng(0).permutation(len(df))
-    df["frame_idx"] = np.argsort(order)
-    return df.sort_values("frame_idx").reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values("frame_idx").reset_index(drop=True)
 
 
 def _image_annotations(source_id: str, cfg: dict) -> pd.DataFrame:
