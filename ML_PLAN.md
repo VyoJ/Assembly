@@ -87,7 +87,29 @@ package): HistGradientBoosting on 30-cycle window features, val RMSE 13.0, hidde
   threshold); predictor handles tables, files (YOLO boxes + classification), arrays, and replays the winner's scored
   test predictions (`{"replay": i}`) for the live demo.
 
-Next: validators for image / class_probs tasks (Andres), MVTec end to end with YOLO (Samu + Aryan), GPU box.
+Since then: validators cover files / arrays / class_probs (Andres); `random` split allowed only for standalone images,
+duplicate files across splits fail (`4b68c5c`); CWRU signals and MVTec images also run end to end.
+
+### Still missing for the training half
+
+Must have:
+1. Recipes for non-table data: signals (FFT / band features + XGBoost, optional 1D-CNN) and images (anomaly
+   detection on good-only training: pretrained ResNet features + kNN, PatchCore-lite, CPU-friendly).
+2. MVTec example: `specs/metal_nut_example.json` + `_prepare.py` (random split), needed for the demo.
+3. One run with a real LLM writing `prepare.py` / `train.py` on the three datasets (needs the Token Factory key and
+   orchestration calling `ml.api`). Everything so far was written by us.
+4. Offline weights: experiments have no internet, so ResNet / YOLO weights must be cached by `download_data.py`.
+
+Should have:
+5. CWRU: replace naive decimation with `scipy.signal.decimate` (anti-aliasing); likely cause of low min_class_recall.
+6. `program.md`: split rules (random only for standalone images; groups by recording / clip) and `normal_class`.
+7. Run on a GPU (Daytona / AMD cloud); the ROCm torch path is untested.
+
+Decide or drop:
+8. Vision stubs (`sam3.py`, `pseudolabel.py`, `vision_utils.py`): drop SAM3 / pseudolabels, keep `image_level_score`
+   and tiling only if the image recipe needs them.
+9. A real video clip through catalog → prepare → validators.
+10. Optional (Google DeepMind prize): Gemma-4-31B-IT (Token Factory) describing frames in `peek_stream`.
 
 ## Timeline (submission 18 Oct; check the exact lablab deadline)
 
