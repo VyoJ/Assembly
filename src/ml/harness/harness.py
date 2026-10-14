@@ -189,8 +189,9 @@ def write_dataset(train, val, test, *, groups=None, meta: dict | None = None) ->
         boxes [[x1, y1, x2, y2, class], ...], or a mask file path.
     groups: {"train": [...], "val": [...], "test": [...]} group id per row (e.g. machine or recording),
         so validators can check that no group appears in two splits.
-    meta: e.g. {"split": "group" | "temporal", "time_col": "time", "early_warning_horizon": 30};
-        stored in data/meta.json for validators and scoring.
+    meta: e.g. {"split": "group" | "temporal", "time_col": "time", "early_warning_horizon": 30,
+        "normal_class": "normal"}; stored in data/meta.json for validators, scoring and the deployed
+        predictor (class_probs alarms when the predicted class isn't normal_class).
     Val/test labels go to the hidden labels dir; train.py never sees them.
     """
     labels_dir = os.environ.get("ASSEMBLY_LABELS_DIR")

@@ -74,6 +74,7 @@ def package(ws: Workspace) -> str:
         "threshold": _read_json(src / "predict_meta.json").get("threshold", model_info.get("threshold")),
         "early_warning_horizon": data_meta.get("early_warning_horizon"),
         "classes": data_meta.get("classes") or model_info.get("classes"),
+        "normal_class": _normal_class(data_meta.get("classes") or model_info.get("classes"), data_meta),
         "feature_columns": feature_columns,
         "model_kind": model_info.get("kind"),
         "onnx": model_info.get("onnx"),
@@ -90,6 +91,17 @@ def package(ws: Workspace) -> str:
     manifest["runtime_provider"] = pred.provider
     (pkg / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
     return str(pkg)
+
+
+NORMAL_NAMES = {"normal", "good", "ok", "healthy", "no_fault", "nominal"}
+
+
+def _normal_class(classes, data_meta: dict):
+    """The class that means 'no problem', for the class_probs alarm: meta.json["normal_class"] if prepare.py
+    set it, else a class with a conventional name. None -> class_probs tasks never alarm."""
+    if data_meta.get("normal_class") is not None:
+        return data_meta["normal_class"]
+    return next((c for c in classes or [] if str(c).lower() in NORMAL_NAMES), None)
 
 
 class Predictor:
@@ -120,6 +132,7 @@ class Predictor:
         h = self.manifest.get("early_warning_horizon")
         self.horizon = float(h) if h is not None else 30.0
         self.classes = self.manifest.get("classes")
+        self.normal_class = self.manifest.get("normal_class")
         rp = self.path / "replay_inputs.parquet"
         self._replay = pd.read_parquet(rp) if rp.exists() else None
         self._stored = self._load_stored()
@@ -160,7 +173,9 @@ class Predictor:
         if self.fmt == "class_probs":
             p = np.ravel(np.asarray(raw, float))
             names = self.classes or list(range(len(p)))
-            return {"probs": [round(x, 4) for x in p.tolist()], "label": names[int(np.argmax(p))], "alarm": False}
+            label = names[int(np.argmax(p))]
+            alarm = self.normal_class is not None and label != self.normal_class
+            return {"probs": [round(x, 4) for x in p.tolist()], "label": label, "alarm": alarm}
         boxes = [list(b) for b in raw]
         return {"boxes": boxes, "alarm": any(b[4] >= self.threshold for b in boxes)}
 

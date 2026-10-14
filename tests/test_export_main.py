@@ -30,3 +30,18 @@ def test_model_with_main_class_loads_in_a_fresh_process(tmp_path):
     out = subprocess.run([sys.executable, "-c", code], check=False, capture_output=True, text=True)
     assert out.returncode == 0, out.stderr[-500:]
     assert out.stdout.strip() == "6.0"
+
+
+def test_class_probs_alarm_when_not_the_normal_class():
+    from ml.package import Predictor, _normal_class
+
+    assert _normal_class(["ball", "normal"], {}) == "normal"
+    assert _normal_class(["a", "b"], {"normal_class": "b"}) == "b"
+    assert _normal_class(["a", "b"], {}) is None
+
+    p = Predictor.__new__(Predictor)
+    p.fmt, p.classes, p.normal_class = "class_probs", ["ball", "normal"], "normal"
+    assert p._shape([0.9, 0.1]) == {"probs": [0.9, 0.1], "label": "ball", "alarm": True}
+    assert p._shape([0.2, 0.8])["alarm"] is False
+    p.normal_class = None  # no known "normal" class: never alarm
+    assert p._shape([0.9, 0.1])["alarm"] is False

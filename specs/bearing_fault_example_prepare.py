@@ -35,5 +35,5 @@ harness.write_dataset(
     parts["train"][:2], parts["val"][:2], parts["test"][:2],
     groups={s: p[2] for s, p in parts.items()},
     meta={"split": "group", "group_col": "load_hp", "sample_hz": TARGET_HZ, "window": WINDOW,
-          "classes": sorted(recordings["fault"].unique())},
+          "normal_class": "normal"},
 )
