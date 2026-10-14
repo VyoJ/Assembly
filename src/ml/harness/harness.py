@@ -6,7 +6,6 @@ train.py side:    task(), load_train(), load_val_inputs(), load_test_inputs(), i
                   time_left(), device(), weights(), save_model(), finish()
 
 Configured by env vars set by ml/runner.py (see its docstring).
-TODO(ML): implement the functions marked TODO.
 """
 
 import json
@@ -325,12 +324,107 @@ def weights(name: str) -> str:
     return str(path)
 
 
+def _example_input(X):
+    """A few rows of the model's real input, used to export ONNX (None for file inputs)."""
+    import numpy as np
+    import pandas as pd
+
+    if isinstance(X, pd.DataFrame):
+        num = X.select_dtypes("number")
+        return X.head(8) if num.shape[1] == X.shape[1] else None
+    return np.asarray(X)[:8]
+
+
 def save_model(model, **kwargs) -> None:
-    """TODO(ML): export to EXP_DIR/model via ml.models.export.save_model (ONNX / joblib / SAM 3 config)."""
-    raise NotImplementedError("TODO(ML): harness.save_model")
+    """Save the deployable model to EXP_DIR/model (ml.models.export: joblib / ONNX / YOLO).
+    The model must take the same X that load_val_inputs() returns. kwargs (threshold, classes, ...) are kept
+    in model.json; pass example_input=... to override the export example."""
+    from ml.models.export import save_model as _save
+
+    example = kwargs.pop("example_input", None)
+    if example is None:
+        example = _example_input(load_train()[0])
+    _save(model, str(EXP_DIR / "model"), example_input=example, **kwargs)
+    print(f"saved model to {EXP_DIR.name}/model")
+
+
+def _rows(X, i: int):
+    return X.iloc[[i]] if hasattr(X, "iloc") else X[i:i + 1]
+
+
+def _to_records(fmt: str, preds, sids: list[str]):
+    """predict_fn output -> DataFrame (tabular formats) or {sample_id: ...} (boxes / masks). Raises ValueError."""
+    import numpy as np
+    import pandas as pd
+
+    n = len(sids)
+    if fmt in ("boxes", "masks"):
+        preds = list(preds)
+        if len(preds) != n:
+            raise ValueError(f"predict_fn returned {len(preds)} items for {n} images")
+        if fmt == "boxes":
+            out = {}
+            for sid, boxes in zip(sids, preds, strict=True):
+                boxes = np.asarray(boxes, dtype=float).reshape(-1, 6) if len(boxes) else np.zeros((0, 6))
+                out[sid] = boxes.tolist()
+            return out
+        return {sid: [{"mask": str(p["mask"]), "score": float(p["score"])} for p in items]
+                for sid, items in zip(sids, preds, strict=True)}
+
+    arr = np.asarray(preds, dtype=float)
+    if fmt == "class_probs":
+        if arr.ndim != 2 or arr.shape[0] != n:
+            raise ValueError(f"class_probs: predict_fn must return an [n_rows, n_classes] array, got shape {arr.shape}")
+        df = pd.DataFrame(arr, columns=[f"p_{i}" for i in range(arr.shape[1])])
+    else:
+        if fmt == "binary_score" and arr.ndim == 2 and arr.shape[1] == 2:
+            arr = arr[:, 1]  # predict_proba output: keep P(positive)
+        arr = arr.reshape(-1) if arr.ndim == 2 and 1 in arr.shape else arr
+        if arr.ndim != 1 or arr.shape[0] != n:
+            raise ValueError(f"{fmt}: predict_fn must return one number per row ({n}), got shape {arr.shape}")
+        df = pd.DataFrame({"pred" if fmt == "scalar" else "score": arr})
+    if not np.isfinite(arr).all():
+        raise ValueError(f"{fmt}: predictions contain NaN or inf")
+    df.insert(0, "sample_id", sids)
+    return df
+
+
+def _latency_ms(predict_fn, X, n: int = 50) -> tuple[float, float]:
+    import numpy as np
+
+    total = len(X)
+    idx = np.linspace(0, total - 1, min(n, total)).astype(int)
+    times = []
+    for i in idx:
+        t0 = time.perf_counter()
+        predict_fn(_rows(X, int(i)))
+        times.append((time.perf_counter() - t0) * 1000)
+    return float(np.percentile(times, 50)), float(np.percentile(times, 95))
 
 
 def finish(predict_fn, *, threshold: float | None = None) -> None:
-    """TODO(ML): run predict_fn on val + test inputs, check output matches task()['prediction_format'],
-    measure p50/p95 latency per sample, write predictions + timings to EXP_DIR. The runner scores them."""
-    raise NotImplementedError("TODO(ML): harness.finish")
+    """Run predict_fn on val + test inputs, check the output matches task()['prediction_format'], measure
+    per-sample latency, and write {val,test}_predictions + timings.json + predict_meta.json to EXP_DIR.
+    The runner scores them against the hidden labels."""
+    import sys
+
+    fmt = task()["prediction_format"]
+    EXP_DIR.mkdir(parents=True, exist_ok=True)
+    for split in ("val", "test"):
+        X, sids = _load_inputs(split), ids(split)
+        records = _to_records(fmt, predict_fn(X), sids)
+        if isinstance(records, dict):
+            (EXP_DIR / f"{split}_predictions.json").write_text(json.dumps(records))
+        else:
+            records.to_parquet(EXP_DIR / f"{split}_predictions.parquet", index=False)
+        print(f"wrote {split} predictions ({len(sids)} samples)")
+
+    p50, p95 = _latency_ms(predict_fn, _load_inputs("val"))
+    timings = {"p50_latency_ms": round(p50, 3), "p95_latency_ms": round(p95, 3)}
+    if "torch" in sys.modules:
+        torch = sys.modules["torch"]
+        if torch.cuda.is_available():
+            timings["peak_mem_gb"] = round(torch.cuda.max_memory_allocated() / 1e9, 2)
+    (EXP_DIR / "timings.json").write_text(json.dumps(timings))
+    (EXP_DIR / "predict_meta.json").write_text(json.dumps({"threshold": threshold}))
+    print(f"p50_latency_ms={p50:.3f} p95_latency_ms={p95:.3f}")

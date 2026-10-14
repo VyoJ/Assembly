@@ -149,3 +149,75 @@ def test_compute_metrics_formats(tmp_path):
     pd.DataFrame({"sample_id": ids[:3], "p_0": probs[:, 0], "p_1": probs[:, 1]}).to_parquet(tmp_path / "pc.parquet")
     m = scoring.compute_metrics("class_probs", str(tmp_path / "pc"), str(tmp_path / "cl"), ["accuracy", "min_class_recall"])
     assert m["accuracy"] == pytest.approx(2 / 3) and m["min_class_recall"] == 0.5
+
+
+# ---------------------------------------------------------------- the real thing: harness + validators, no stubs
+
+REAL_PREPARE = """
+import harness, numpy as np, pandas as pd
+rng = np.random.default_rng(1)
+rows = []
+for unit in range(40):
+    life = int(rng.integers(120, 220))
+    for t in range(1, life + 1):
+        wear = t / life
+        rows.append({"unit": unit, "time": t, "s1": 5 * wear + rng.normal(0, .2), "s2": rng.normal(), "rul": life - t})
+df = pd.DataFrame(rows)
+units = rng.permutation(40)
+split = {"train": units[:28], "val": units[28:34], "test": units[34:]}
+parts, groups = {}, {}
+for name, us in split.items():
+    part = df[df.unit.isin(us)]
+    parts[name] = (part[["time", "s1", "s2"]], part["rul"].clip(upper=125))
+    groups[name] = part["unit"].tolist()
+harness.write_dataset(parts["train"], parts["val"], parts["test"], groups=groups,
+                      meta={"split": "group", "group_col": "unit", "early_warning_horizon": 30})
+"""
+
+REAL_TRAIN = """
+import harness
+from sklearn.ensemble import HistGradientBoostingRegressor
+X, y = harness.load_train()
+model = HistGradientBoostingRegressor(max_iter=200).fit(X, y)
+print("epoch=1 loss=1.0")
+harness.save_model(model)
+harness.finish(model.predict)
+"""
+
+
+def test_real_harness_validators_runner_package():
+    spec = TaskSpec(
+        id="real_rul", name="real", rationale="", framing="", input_streams=[], label_sources=[],
+        target_definition="", prediction_format="scalar", primary_metric="rmse",
+        metrics=["rmse", "nasa_score", "early_warning_recall", "early_warning_far", "p95_latency_ms"],
+        kpis=[KPI(metric="rmse", op="<=", threshold=40.0)], split_strategy="by unit", time_budget_s=60,
+    )
+    ws = workspace.create_workspace("test-real", spec)
+    report = runner.run_prepare(ws, REAL_PREPARE)
+    assert report.ok, report.messages
+    assert "Installed packages" in (Path(ws.path) / "data_card.md").read_text()
+
+    result = runner.run_experiment(ws, REAL_TRAIN, {"description": "hgb baseline"})
+    assert result.status == "keep", result.log_tail
+    assert result.all_kpis_passed and result.metrics["p95_latency_ms"] > 0
+
+    runner.full_train(ws, 1.5)
+    assert runner.final_test(ws).passed
+    pred = package.load_predictor(package.package(ws))
+    replayed = pred.predict({"replay": 0})
+    assert replayed["source"] == "replay" and "value" in replayed
+    live = pred.predict({"time": 150, "s1": 4.9, "s2": 0.0})
+    assert live["value"] < 60 and "latency_ms" in live
+
+
+def test_real_validators_catch_group_leak():
+    spec = TaskSpec(
+        id="leaky", name="leaky", rationale="", framing="", input_streams=[], label_sources=[],
+        target_definition="", prediction_format="scalar", primary_metric="rmse", metrics=["rmse"],
+        kpis=[KPI(metric="rmse", op="<=", threshold=40.0)], split_strategy="by unit", time_budget_s=60,
+    )
+    ws = workspace.create_workspace("test-real", spec)
+    leaky = REAL_PREPARE.replace('"val": units[28:34]', '"val": units[20:34]')  # units 20-27 in train AND val
+    report = runner.run_prepare(ws, leaky)
+    assert not report.ok and not report.checks["group_disjoint"]
+    assert any("overlap" in m for m in report.messages)

@@ -364,28 +364,22 @@ def validate(ws: Workspace) -> ValidationReport:
     messages, inputs, meta = [], {}, {}
     data_dir = workspace.ws_dir(ws) / "data"
     labels_dir = workspace.labels_dir(ws.run_id, ws.task_id)
-    paths = {
-        "train": data_dir / "train.parquet",
-        "val": data_dir / "val_inputs.parquet",
-        "test": data_dir / "test_inputs.parquet",
-        "val labels": labels_dir / "val.parquet",
-        "test labels": labels_dir / "test.parquet",
-    }
-    loaded = {}
+    flat = (data_dir / "train.parquet").exists()
     try:
-        from pyarrow import ArrowException
+        from pyarrow import ArrowException  # noqa: F401
     except ImportError:
         messages.append(
             "FAIL files_present: install the declared PyArrow dependency to read Parquet datasets."
         )
+        loaded = {}
     else:
-        for name, path in paths.items():
-            try:
-                loaded[name] = pd.read_parquet(path, engine="pyarrow")
-            except (OSError, ValueError, ImportError, ArrowException) as exc:
-                messages.append(
-                    f"FAIL files_present: {name} table is missing/unreadable ({type(exc).__name__})."
-                )
+        if flat:
+            loaded = _load_flat_layout(data_dir, labels_dir, messages)
+        else:
+            loaded = _load_harness_layout(data_dir, labels_dir, messages)
+    paths = dict.fromkeys(("train", "val", "test", "val labels", "test labels"))
+    if loaded and not flat and not _is_tabular(ws, data_dir):
+        return _validate_generic(ws, loaded, data_dir, messages)
     inputs = {s: loaded[s] for s in ("train", "val", "test") if s in loaded}
     checks["files_present"] = len(loaded) == len(paths)
     metadata_errors = []
@@ -398,6 +392,8 @@ def validate(ws: Workspace) -> ValidationReport:
     if not isinstance(meta, dict):
         meta = {}
         metadata_errors.append("meta.json must contain a JSON object.")
+    if meta.get("groups") and meta.get("group_col") not in ("group", "unit"):
+        meta = {**meta, "group_col": "group"}  # groups come from write_dataset(groups=...), persisted as `group`
     if checks["files_present"]:
         labels = {"train": inputs["train"], "val": loaded["val labels"], "test": loaded["test labels"]}
         format_errors = _format_errors(inputs, labels, meta)
@@ -428,3 +424,141 @@ def validate(ws: Workspace) -> ValidationReport:
         messages=messages,
         data_card=_data_card(ws, inputs, meta, checks, messages),
     )
+
+
+# ---------------------------------------------------------------- harness layout adapter
+# harness.write_dataset (ML_PLAN.md) writes data/{split}_inputs.parquet + data/train_labels.parquet keyed by
+# `sample_id`, hidden {labels_dir}/{split}_labels.parquet, and per-row groups in meta.json["groups"].
+# The checks above work on frames with `id`, `group` and (train only) `y`; this builds those frames.
+
+def _read_meta(data_dir) -> dict:
+    try:
+        meta = json.loads((data_dir / "meta.json").read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _load_flat_layout(data_dir, labels_dir, messages: list[str]) -> dict:
+    """Earlier layout (data/train.parquet with id / group / y; {labels_dir}/{split}.parquet); kept for its tests."""
+    from pyarrow import ArrowException
+
+    paths = {
+        "train": data_dir / "train.parquet",
+        "val": data_dir / "val_inputs.parquet",
+        "test": data_dir / "test_inputs.parquet",
+        "val labels": labels_dir / "val.parquet",
+        "test labels": labels_dir / "test.parquet",
+    }
+    loaded = {}
+    for name, path in paths.items():
+        try:
+            loaded[name] = pd.read_parquet(path, engine="pyarrow")
+        except (OSError, ValueError, ImportError, ArrowException) as exc:
+            messages.append(f"FAIL files_present: {name} table is missing/unreadable ({type(exc).__name__}).")
+    return loaded
+
+
+def _load_harness_layout(data_dir, labels_dir, messages: list[str]) -> dict:
+    from pyarrow import ArrowException
+
+    meta = _read_meta(data_dir)
+    groups = meta.get("groups", {}) if isinstance(meta.get("groups"), dict) else {}
+    loaded = {}
+
+    def read(name, path):
+        try:
+            frame = pd.read_parquet(path, engine="pyarrow")
+        except (OSError, ValueError, ImportError, ArrowException) as exc:
+            if path.with_suffix(".json").exists():  # boxes / masks labels
+                return pd.DataFrame({"sample_id": list(json.loads(path.with_suffix(".json").read_text()))})
+            messages.append(f"FAIL files_present: {name} table is missing/unreadable ({type(exc).__name__}).")
+            return None
+        return frame.rename(columns={"sample_id": "id"})
+
+    for split in ("train", "val", "test"):
+        frame = read(split, data_dir / f"{split}_inputs.parquet")
+        if frame is None:
+            continue
+        g = groups.get(split)
+        if g is not None and len(g) == len(frame) and "group" not in frame:
+            frame.insert(1, "group", g)
+        loaded[split] = frame
+    train_y = read("train labels", data_dir / "train_labels.parquet")
+    if "train" in loaded and train_y is not None:
+        if "y" in train_y:
+            loaded["train"] = loaded["train"].merge(train_y[["id", "y"]], on="id", how="left")
+        else:
+            loaded["train"]["y"] = np.nan
+    elif train_y is None:
+        loaded.pop("train", None)
+    for split in ("val", "test"):
+        frame = read(f"{split} labels", labels_dir / f"{split}_labels.parquet")
+        if frame is not None:
+            loaded[f"{split} labels"] = frame
+    return loaded
+
+
+def _is_tabular(ws: Workspace, data_dir) -> bool:
+    kinds = _read_meta(data_dir).get("input_kind", {})
+    return ws.spec.prediction_format in ("scalar", "binary_score") and all(
+        k == "table" for k in (kinds.values() if isinstance(kinds, dict) else [])
+    )
+
+
+def _validate_generic(ws: Workspace, loaded: dict, data_dir, messages: list[str]) -> ValidationReport:
+    """Image / signal / array inputs and class_probs / boxes / masks: the checks that apply to any layout.
+    (The full tabular checks above cover scalar and binary_score on feature tables.)"""
+    meta = _read_meta(data_dir)
+    checks = dict.fromkeys(CHECKS, True)
+    names = ("train", "val", "test", "val labels", "test labels")
+    checks["files_present"] = all(n in loaded for n in names)
+    if not checks["files_present"]:
+        checks.update(dict.fromkeys(CHECKS, False))
+        messages.append("NOT VERIFIED: remaining checks require all dataset tables.")
+        return ValidationReport(ok=False, checks=checks, messages=messages)
+
+    for split in ("val", "test"):
+        if set(loaded[split]["id"]) != set(loaded[f"{split} labels"]["id"]):
+            checks["format"] = False
+            messages.append(f"FAIL format: {split} inputs and hidden labels must have the same sample_ids.")
+
+    groups = {s: set(loaded[s]["group"]) for s in ("train", "val", "test") if "group" in loaded[s]}
+    if meta.get("split") == "group" and len(groups) < 3:
+        checks["group_disjoint"] = False
+        messages.append("FAIL group_disjoint: split is 'group' but write_dataset got no groups for every split.")
+    for a, b in combinations(groups, 2):
+        overlap = groups[a] & groups[b]
+        if overlap:
+            checks["group_disjoint"] = False
+            messages.append(f"FAIL group_disjoint: {a}/{b}: {len(overlap)} group(s) overlap; split by group.")
+
+    sizes = {s: len(loaded[s]) for s in ("train", "val", "test")}
+    for split, n in sizes.items():
+        if n < (20 if split == "train" else 10):
+            checks["min_sizes"] = False
+            messages.append(f"FAIL min_sizes: {split} has only {n} samples.")
+
+    fmt = ws.spec.prediction_format
+    for split in ("val", "test"):
+        labels = loaded[f"{split} labels"]
+        if fmt in ("class_probs", "binary_score") and "y" in labels and labels["y"].nunique() < 2:
+            checks["label_sanity"] = False
+            messages.append(f"FAIL label_sanity: {split} labels contain a single class.")
+    if fmt in ("boxes", "masks"):
+        messages.append("NOT VERIFIED: label_sanity for boxes / masks (per-image annotations).")
+    messages.append("NOT APPLICABLE: no_label_leak and time_ordered are checked for feature tables only.")
+
+    kinds = meta.get("input_kind", {})
+    card = "\n".join([
+        f"# Data card: {ws.spec.name}",
+        f"- Prediction format: {fmt}",
+        f"- Input kind: {kinds}",
+        f"- Sizes: {sizes}",
+        f"- Classes: {meta.get('classes')}" if meta.get("classes") else "- Classes: n/a",
+        f"- Split: {meta.get('split', 'unspecified')}; groups per split: { {s: len(g) for s, g in groups.items()} }",
+        "",
+        "## Checks",
+        *(f"- {k}: {'PASS' if v else 'FAIL'}" for k, v in checks.items()),
+    ])
+    return ValidationReport(ok=all(checks.values()), checks=checks, messages=messages, data_card=card)

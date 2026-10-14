@@ -14,7 +14,10 @@ from core.config import settings
 from core.contracts import TaskSpec, ValidationReport
 from ml import runner, validators, workspace
 
-pytest.importorskip("xgboost")
+try:
+    import xgboost  # noqa: F401
+except Exception as e:  # noqa: BLE001 - on macOS a missing libomp raises XGBoostError, not ImportError
+    pytest.skip(f"xgboost unavailable: {e!r:.80}", allow_module_level=True)
 ROOT = Path(__file__).resolve().parents[1]
 
 WRITE_PREDS = """
