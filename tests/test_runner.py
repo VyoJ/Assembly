@@ -221,3 +221,96 @@ def test_real_validators_catch_group_leak():
     report = runner.run_prepare(ws, leaky)
     assert not report.ok and not report.checks["group_disjoint"]
     assert any("overlap" in m for m in report.messages)
+
+
+# ---------------------------------------------------------------- non-tabular inputs: waveforms (array) and images (files)
+
+ARRAY_PREPARE = """
+import harness, numpy as np
+rng = np.random.default_rng(2)
+def make(n, start):
+    y = rng.integers(0, 3, n)                       # 3 fault classes
+    t = np.linspace(0, 1, 256)
+    W = np.stack([np.sin(2 * np.pi * (5 + 10 * c) * t) + rng.normal(0, .3, 256) for c in y])
+    return W.astype("float32"), ["normal", "inner_race", "ball"][0:3] and [["normal", "inner_race", "ball"][c] for c in y], \\
+        [f"rec{start + i // 10}" for i in range(n)]
+(Xtr, ytr, gtr), (Xva, yva, gva), (Xte, yte, gte) = make(300, 0), make(90, 100), make(90, 200)
+harness.write_dataset((Xtr, ytr), (Xva, yva), (Xte, yte), groups={"train": gtr, "val": gva, "test": gte},
+                      meta={"split": "group"})
+"""
+
+ARRAY_TRAIN = """
+import harness, numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import FunctionTransformer
+spectrum = FunctionTransformer(lambda W: np.abs(np.fft.rfft(W, axis=1))[:, :64])
+X, y = harness.load_train()
+model = make_pipeline(spectrum, LogisticRegression(max_iter=500)).fit(X, y.to_numpy())
+harness.save_model(model)
+harness.finish(model.predict_proba)
+"""
+
+FILES_PREPARE = """
+import harness, numpy as np
+from pathlib import Path
+from PIL import Image
+rng = np.random.default_rng(3)
+out = Path("raw_images"); out.mkdir(exist_ok=True)
+def make(n, start):
+    paths, ys = [], []
+    for i in range(n):
+        defect = int(rng.random() < 0.4)
+        img = (rng.random((32, 32)) * 60).astype("uint8")
+        if defect:
+            img[8:20, 8:20] = 255                     # bright scratch
+        p = out / f"part{start + i}.png"; Image.fromarray(img).save(p)
+        paths.append(str(p)); ys.append(defect)
+    return paths, ys
+tr, va, te = make(120, 0), make(40, 1000), make(40, 2000)
+harness.write_dataset(tr, va, te, meta={"split": "random"})
+"""
+
+FILES_TRAIN = """
+import harness, numpy as np
+from sklearn.linear_model import LogisticRegression
+def feats(X):
+    return np.stack([[harness.load_image(p).astype(float).max(), harness.load_image(p).astype(float).mean()] for p in X["path"]])
+X, y = harness.load_train()
+clf = LogisticRegression().fit(feats(X), y.to_numpy())
+harness.save_model(clf, example_input=feats(X.head(4)))
+harness.finish(lambda X: clf.predict_proba(feats(X))[:, 1], threshold=0.5)
+"""
+
+
+def _spec(task_id: str, fmt: str, primary: str, kpi: KPI) -> TaskSpec:
+    return TaskSpec(
+        id=task_id, name=task_id, rationale="", framing="", input_streams=[], label_sources=[],
+        target_definition="", prediction_format=fmt, primary_metric=primary, metrics=[primary, "p95_latency_ms"],
+        kpis=[kpi], split_strategy="", time_budget_s=60,
+    )
+
+
+def test_waveform_array_inputs_class_probs_end_to_end():
+    ws = workspace.create_workspace("test-array", _spec("fault", "class_probs", "macro_f1",
+                                                        KPI(metric="accuracy", op=">=", threshold=0.9)))
+    report = runner.run_prepare(ws, ARRAY_PREPARE)
+    assert report.ok, report.messages
+    result = runner.run_experiment(ws, ARRAY_TRAIN, {"description": "fft + logreg"})
+    assert result.status == "keep" and result.all_kpis_passed, result.log_tail
+    assert runner.final_test(ws).passed
+    pred = package.load_predictor(package.package(ws))
+    out = pred.predict({"replay": 1})
+    assert out["label"] in ("normal", "inner_race", "ball") and len(out["probs"]) == 3
+
+
+def test_image_file_inputs_binary_end_to_end():
+    ws = workspace.create_workspace("test-files", _spec("defect", "binary_score", "auroc",
+                                                        KPI(metric="recall", op=">=", threshold=0.9)))
+    report = runner.run_prepare(ws, FILES_PREPARE)
+    assert report.ok, report.messages
+    result = runner.run_experiment(ws, FILES_TRAIN, {"description": "brightness logreg"})
+    assert result.status == "keep" and result.all_kpis_passed, result.log_tail
+    assert runner.final_test(ws).passed
+    pred = package.load_predictor(package.package(ws))
+    assert pred.predict({"replay": 0})["source"] == "replay"
