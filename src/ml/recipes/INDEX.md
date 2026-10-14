@@ -1,25 +1,19 @@
 # Recipes
 
-Working reference scripts the agent can read with `read_recipe(name)`. They are examples, not
-templates: borrow what helps. Each must run end to end against `harness.py`.
+Reference scripts the agent can read with `read_recipe(name)`. They are examples, not templates:
+borrow what helps. They use only the `harness.py` API described in `program.md`.
 
-TODO(ML): write these (one line each here: file, what it shows, when to use it).
+## Available
+- `xgb_baseline.py`: XGBoost in an sklearn Pipeline for scalar / binary_score / class_probs. Budget-aware,
+  early stopping on an internal group split, F1 threshold. **Start here for sensor tasks.**
+- `threshold_calibration.py`: choose the alarm threshold from the KPIs (max recall under a false-alarm
+  cap), and how to shift a scalar prediction for early-warning KPIs.
 
-## Sensors / tabular
-- `xgb_window_features.py`: XGBoost on per-unit rolling-window features; fast baseline for scalar or binary targets.
-- `lstm_sequence.py`: LSTM/GRU over fixed-length windows, budget-aware training loop with internal early stopping.
-- `patchtst_hf.py`: PatchTST via `transformers` for longer histories.
-- `threshold_calibration.py`: tune the alarm threshold for a false-alarm-rate KPI on an internal split.
-- `optuna_inside_train.py`: time-boxed Optuna sweep inside train.py.
-
-## Vision
-- `yolo_finetune.py`: fine-tune Ultralytics YOLO on a data.yaml, export ONNX, image-level scoring.
-- `sam3_zero_shot.py`: SAM 3 text prompts as a zero-shot detector.
-- `sam3_pseudolabel_then_yolo.py`: SAM 3 labels the training images, then YOLO trains on them.
-- `patchcore_knn.py`: anomaly scoring from frozen `timm` features + kNN (normal-only training data).
-
-## Ideas worth trying
-- Asymmetric loss that penalises late failure predictions more than early ones.
-- Piecewise-linear RUL target (cap at ~125 cycles).
-- `imgsz` 1024 + tiling for small defects; freeze backbone layers when data is tiny.
-- SAM 3 prompt wording ("scratch" vs. "surface scratch on metal nut") and score threshold.
+## Ideas worth trying (no recipe yet)
+- Per-unit rolling-window features (mean / std / slope over the last N cycles) if `prepare.py` gave
+  one row per cycle without history.
+- Piecewise-linear RUL target (cap at ~125 cycles) and an asymmetric loss that penalises late predictions.
+- LightGBM as a faster alternative; small Optuna sweep sized with `harness.time_left()`.
+- LSTM / 1D-CNN over fixed windows when trees plateau (torch; must output the final prediction).
+- Vision: Ultralytics YOLO fine-tune from `harness.weights("yolo11n.pt")`; `imgsz` 1024 + tiling for
+  small defects; freeze backbone layers when data is tiny.
