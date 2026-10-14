@@ -1,3 +1,5 @@
+"""harness.py data side against the ML_PLAN.md layout, in a throwaway workspace (no runner needed)."""
+
 import importlib.util
 import json
 import runpy
@@ -34,24 +36,26 @@ def _spec(name: str) -> dict:
     return json.loads((ROOT / "specs" / name).read_text())
 
 
-def _check_hidden(ws: Path, labels: Path, harness, split: str):
-    hidden = pd.read_parquet(labels / f"{split}.parquet")
-    assert hidden["id"].tolist() == harness.ids(split)
+def _no_labels_in_workspace(ws: Path, split: str):
+    assert not list((ws / "data").glob(f"{split}_labels*"))
     assert "y" not in pd.read_parquet(ws / "data" / f"{split}_inputs.parquet").columns
-    return hidden
 
 
 @pytest.mark.skipif(not HAS_CMAPSS, reason="C-MAPSS not downloaded")
-def test_table_dataset_round_trip(tmp_path, monkeypatch):
+def test_table_dataset_matches_the_seam(tmp_path, monkeypatch):
     ws, labels, harness = _workspace(tmp_path, monkeypatch, _spec("rul_example.json"))
     runpy.run_path(str(ROOT / "specs" / "rul_example_prepare.py"))
     X, y = harness.load_train()
-    assert {"id", "group"} <= set(X.columns) and len(X) == len(y) and y.max() <= 125
+    assert X.index.name == "sample_id" and "sample_id" not in X.columns
+    assert y.index.equals(X.index) and y.max() <= 125
     for split in ("val", "test"):
-        _check_hidden(ws, labels, harness, split)
-        assert not set(harness.groups(split)) & set(X["group"])  # no machine in two splits
+        _no_labels_in_workspace(ws, split)
+        hidden = pd.read_parquet(labels / f"{split}_labels.parquet")
+        assert list(hidden.columns) == ["sample_id", "y"] and hidden["sample_id"].tolist() == harness.ids(split)
+        assert not set(harness.groups(split)) & set(harness.groups("train"))  # no machine in two splits
     meta = json.loads((ws / "data" / "meta.json").read_text())
-    assert meta["input_kind"]["train"] == "table" and sum(meta["sizes"].values()) == 20631
+    assert meta["prediction_format"] == "scalar" and meta["input_kind"]["train"] == "table"
+    assert sum(meta["sizes"].values()) == 20631
 
 
 @pytest.mark.skipif(not HAS_CWRU, reason="CWRU not downloaded")
@@ -60,14 +64,14 @@ def test_array_dataset_from_raw_signals(tmp_path, monkeypatch):
     runpy.run_path(str(ROOT / "specs" / "bearing_fault_example_prepare.py"))
     X, y = harness.load_train()
     assert isinstance(X, np.ndarray) and X.shape[1:] == (2048,) and len(X) == len(y)
-    assert set(y) == {"normal", "inner_race", "ball", "outer_race"}
-    Xv = harness.load_val_inputs()
-    hidden = _check_hidden(ws, labels, harness, "val")
-    assert len(Xv) == len(hidden)
+    assert harness.classes() == ["ball", "inner_race", "normal", "outer_race"]
+    assert set(y) == {0, 1, 2, 3}  # class indices; names via classes()
+    assert len(harness.load_val_inputs()) == len(pd.read_parquet(labels / "val_labels.parquet"))
+    _no_labels_in_workspace(ws, "val")
     assert not set(harness.groups("val")) & set(harness.groups("train"))
 
 
-def test_files_dataset_hides_labels_in_paths(tmp_path, monkeypatch):
+def test_files_and_masks_hide_labels(tmp_path, monkeypatch):
     from PIL import Image
 
     src = tmp_path / "src"
@@ -76,23 +80,33 @@ def test_files_dataset_hides_labels_in_paths(tmp_path, monkeypatch):
         (src / label).mkdir(parents=True, exist_ok=True)
         Image.new("RGB", (4, 4)).save(src / label / f"{i}.png")
         paths.append(str(src / label / f"{i}.png"))
-        mask = src / f"{i}_mask.png"
+        mask = src / label / f"{i}_mask.png"
         Image.new("L", (4, 4)).save(mask)
         masks.append(str(mask) if label != "good" else None)
 
-    spec = {"input_streams": [], "label_sources": []}
-    ws, labels, harness = _workspace(tmp_path, monkeypatch, spec)
-    boxes = [[[0, 0, 2, 2, 1.0, 0]], []]
-    harness.write_dataset((paths[:2], masks[:2]), (paths[2:3], boxes[:1]), (paths[3:], boxes[1:]))
+    ws, labels, harness = _workspace(tmp_path, monkeypatch, {"input_streams": [], "label_sources": [],
+                                                             "prediction_format": "masks"})
+    harness.write_dataset((paths[:2], masks[:2]), (paths[2:3], masks[2:3]), (paths[3:], masks[3:]))
 
     X, y = harness.load_train()
     assert all(Path(p).exists() and "scratch" not in p and "good" not in p for p in X["path"])
-    assert pd.isna(y.iloc[0]) and Path(y.iloc[1]).exists()  # good part: no mask
-    Xv = harness.load_val_inputs()
-    assert Path(Xv["path"].iloc[0]).name == "val-000000.png"
-    hidden = pd.read_parquet(labels / "val.parquet")
-    assert json.loads(hidden["y"].iloc[0]) == boxes[0]
-    assert not list((ws / "data").rglob("*mask*"))
+    assert pd.isna(y.iloc[0]) and Path(y.iloc[1]).exists() and "scratch" not in y.iloc[1]  # good: no mask
+    assert Path(harness.load_val_inputs()["path"].iloc[0]).name == "val-000000.png"
+    test_masks = json.loads((labels / "test_labels.json").read_text())
+    assert Path(test_masks["test-000000"]).exists() and str(labels) in test_masks["test-000000"]
+    assert not (ws / "data" / "val_labels.json").exists() and not (ws / "data" / "test_labels.json").exists()
+    assert not (ws / "data" / "files_y" / "test").exists()  # test masks only in the hidden dir
+
+
+def test_boxes_labels_are_a_json_map(tmp_path, monkeypatch):
+    _, labels, harness = _workspace(tmp_path, monkeypatch, {"input_streams": [], "label_sources": [],
+                                                            "prediction_format": "boxes"})
+    X = np.zeros((2, 4, 4, 3))
+    boxes = [[[0, 0, 2, 2, 0]], []]
+    harness.write_dataset((X, boxes), (X, boxes), (X, boxes))
+    assert json.loads((labels / "val_labels.json").read_text()) == {"val-000000": boxes[0], "val-000001": []}
+    _, y = harness.load_train()
+    assert y.tolist() == boxes
 
 
 def test_write_dataset_refuses_without_labels_dir(tmp_path, monkeypatch):
