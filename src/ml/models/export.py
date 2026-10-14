@@ -121,6 +121,8 @@ def save_model(model, out_dir: str, example_input=None, **kwargs) -> str:
         import joblib
 
         try:
+            if b"__main__" in pickle.dumps(model):  # classes/callbacks defined in train.py: load would fail later
+                raise pickle.PicklingError("references __main__")
             joblib.dump(model, out / "model.joblib")
             info.update(kind="joblib", file="model.joblib")
         except (pickle.PicklingError, AttributeError, TypeError):

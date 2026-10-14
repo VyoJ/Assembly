@@ -46,6 +46,7 @@ else:  # class_probs
 
 imputer = SimpleImputer(strategy="median").fit(X_tr)
 model.fit(imputer.transform(X_tr), y_tr, eval_set=[(imputer.transform(X_va), y_va)], verbose=False)
+model.set_params(callbacks=None)  # the budget callback uses harness; don't ship it inside the model
 
 # Refit-free: wrap the fitted pieces as one deployable pipeline (takes raw feature columns).
 pipe = Pipeline([("impute", imputer), ("model", model)])
