@@ -225,7 +225,21 @@ def write_dataset(train, val, test, *, groups=None, meta: dict | None = None) ->
         info["classes"] = classes
     if not info["groups"]:
         del info["groups"]
-    (DATA_DIR / "meta.json").write_text(json.dumps({**info, **(meta or {})}, indent=2, default=str))
+    info = {**info, **(meta or {})}
+    # Provenance the validators need and prepare.py can't override: frames cut from a video are near-duplicates
+    # of their neighbours, so they can't be split at random.
+    info["from_video"] = any(_from_video(X) for X, _ in splits.values())
+    (DATA_DIR / "meta.json").write_text(json.dumps(info, indent=2, default=str))
+
+
+def _from_video(X) -> bool:
+    import pandas as pd
+
+    if isinstance(X, pd.DataFrame):
+        X = X["path"] if "path" in X.columns else []
+    elif not isinstance(X, (list, tuple, pd.Series)):
+        return False
+    return any(isinstance(p, (str, Path)) and "_cache/frames" in Path(p).as_posix() for p in X)
 
 
 # ---------------------------------------------------------------- train.py side

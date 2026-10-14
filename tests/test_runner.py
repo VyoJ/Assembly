@@ -314,3 +314,37 @@ def test_image_file_inputs_binary_end_to_end():
     assert runner.final_test(ws).passed
     pred = package.load_predictor(package.package(ws))
     assert pred.predict({"replay": 0})["source"] == "replay"
+
+
+# split="random" is only accepted for standalone images; windows, video frames and duplicates must fail.
+RANDOM_ARRAYS = """
+import harness, numpy as np
+rng = np.random.default_rng(0)
+def make(n):
+    return rng.normal(size=(n, 64)).astype("float32"), list(rng.integers(0, 2, n))
+harness.write_dataset(make(60), make(20), make(20), meta={"split": "random"})
+"""
+
+
+@pytest.mark.parametrize("variant", ["arrays", "video_frames", "duplicate_image"])
+def test_random_split_rejected_where_samples_are_not_independent(variant):
+    spec = _spec(f"rand-{variant}", "binary_score", "auroc", KPI(metric="recall", op=">=", threshold=0.9))
+    ws = workspace.create_workspace(f"rand-{variant}", spec)
+    prepare = {
+        "arrays": RANDOM_ARRAYS,
+        "video_frames": FILES_PREPARE.replace('Path("raw_images")', 'Path("_cache/frames/cam/clip0")')
+                                     .replace("out.mkdir(exist_ok=True)", "out.mkdir(parents=True, exist_ok=True)"),
+        # the first test image is a byte-for-byte copy of the first train image
+        "duplicate_image": FILES_PREPARE.replace("tr, va, te = make(120, 0), make(40, 1000), make(40, 2000)",
+                                                 "tr, va, te = make(120, 0), make(40, 1000), make(40, 2000)\n"
+                                                 "te[0][0] = tr[0][0]; te[1][0] = tr[1][0]"),
+    }[variant]
+    report = runner.run_prepare(ws, prepare)
+    assert not report.ok and not report.checks["group_disjoint"], report.messages
+
+
+def test_random_split_of_standalone_images_passes_with_a_warning():
+    spec = _spec("rand-ok", "binary_score", "auroc", KPI(metric="recall", op=">=", threshold=0.9))
+    report = runner.run_prepare(workspace.create_workspace("rand-ok", spec), FILES_PREPARE)
+    assert report.ok, report.messages
+    assert any(m.startswith("WARN: random split") for m in report.messages)

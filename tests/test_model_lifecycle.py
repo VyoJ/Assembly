@@ -81,7 +81,10 @@ def lifecycle(tmp_path, monkeypatch):
                 X = []
                 for i in range(n):
                     path = tmp_path / f"{split}_{i}.png"
-                    Image.new("L", (4, 4), color=(i % 2) * 255).save(path)
+                    img = Image.new("L", (4, 4), color=(i % 2) * 255)
+                    img.putpixel((3, 2), i + 1)  # distinct files: identical content across splits fails validation
+                    img.putpixel((3, 3), 100 + ("train", "val", "test").index(split))
+                    img.save(path)
                     X.append(str(path))
             else:
                 X = raw.astype("float32")
@@ -468,7 +471,7 @@ def test_accelerator_synchronization_hook(lifecycle, monkeypatch, device):
 
 def test_file_predictor_contract(lifecycle):
     h, _, _ = lifecycle("files", "binary_score")
-    h.finish(lambda X: np.array([h.load_image(p).mean() / 255 for p in X["path"]]))
+    h.finish(lambda X: np.array([h.load_image(p)[0, 0] / 255 for p in X["path"]]))  # an unstamped pixel
     df = pd.read_parquet(h.EXP_DIR / "val_predictions.parquet")
     assert df["score"].tolist() == [0., 1., 0., 1., 0., 1., 0., 1., 0.]
 

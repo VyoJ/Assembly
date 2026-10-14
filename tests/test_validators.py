@@ -790,7 +790,7 @@ def test_file_images_integrity_and_pixel_target_scan(separate_dataset, tmp_path,
             rel = Path("files") / split / f"{sid}.png"
             p = data / rel
             p.parent.mkdir(parents=True, exist_ok=True)
-            Image.new("RGB", (4, 4)).save(p)
+            Image.new("RGB", (4, 4), (len(paths), ("train", "val", "test").index(split), 0)).save(p)  # distinct across splits
             paths.append(str(rel))
         f["path"] = paths
         if split == "val":

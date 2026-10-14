@@ -148,11 +148,61 @@ def _format_errors(inputs: dict, labels: dict, meta: dict) -> list[str]:
     return errors
 
 
+def _random_split_errors(meta: dict) -> list[str]:
+    """split='random' is only safe when every sample is an independent item (one photo per part). Tables,
+    windows cut from a recording and frames from a video have near-duplicate neighbours, so they need groups."""
+    kinds = meta.get("input_kind")
+    kinds = set(kinds.values()) if isinstance(kinds, dict) else set()
+    if kinds != {"files"}:
+        return [("split='random' is only allowed for standalone image files; tables and arrays (windows, "
+                 "sequences) need split='group' (by entity/recording) or 'temporal'.")]
+    if meta.get("from_video"):
+        return ["frames from a video are near-duplicates of their neighbours; use split='group' by clip."]
+    if meta.get("groups"):
+        return ["groups were given; declare split='group' so they are checked."]
+    if meta.get("time_col"):
+        return ["a time_col was given; use split='temporal'."]
+    return []
+
+
+def _random_split_ok(meta: dict) -> bool:
+    return meta.get("split") == "random" and not _random_split_errors(meta)
+
+
+def _duplicate_file_errors(inputs: dict, data_dir: Path) -> list[str]:
+    """The same file content in two splits is a leak whatever the split strategy."""
+    import hashlib
+
+    seen = {}
+    for split, frame in inputs.items():
+        if "path" not in frame:
+            return []
+        for value in frame["path"]:
+            try:
+                digest = hashlib.sha256(_artifact_path(data_dir / value, data_dir).read_bytes()).hexdigest()
+            except (OSError, ValueError, TypeError):
+                continue  # unreadable files are reported by _file_errors
+            seen.setdefault(digest, set()).add(split)
+    dup = sum(len(s) > 1 for s in seen.values())
+    return [f"{dup} file(s) have identical content in more than one split."] if dup else []
+
+
 def _split_errors(inputs: dict, meta: dict, metadata_errors: list[str]) -> tuple[list, list, list]:
     """Check groups and per-entity row chronology; return errors for each check and notes."""
     strategy = meta.get("split")
+    if not metadata_errors and strategy == "random":
+        errors = _random_split_errors(meta)
+        if errors:
+            return errors, errors, []
+        return [], [], [
+            ("WARN: random split; samples are assumed independent (one file per physical item). "
+             "Only exact duplicates across splits are checked."),
+            "NOT APPLICABLE: time_ordered; declared split is random.",
+        ]
     if metadata_errors or strategy not in ("group", "temporal"):
-        errors = metadata_errors or ["meta.json: split must explicitly be 'group' or 'temporal'."]
+        errors = metadata_errors or [
+            "meta.json: split must explicitly be 'group' or 'temporal' ('random' only for standalone image files)."
+        ]
         return errors, errors, []
     errors, notes = [], []
     if any(frame.columns.nlevels != 1 or not frame.columns.is_unique for frame in inputs.values()):
@@ -508,6 +558,8 @@ def validate(ws: Workspace) -> ValidationReport:
                 "Unsupported prediction format; scalar, binary_score and separate-label class_probs are validated."
             )
         group_errors, time_errors, notes = _split_errors(inputs, meta, metadata_errors)
+        if new_layout and meta.get("input_kind", {}).get("train") == "files" and checks["files_present"]:
+            group_errors = [*group_errors, *_duplicate_file_errors(inputs, data_dir)]
         scan_ready = not format_errors and not label_errors and all(len(f) for f in inputs.values())
         leak_errors = _leak_errors(inputs, labels, scan_ready, arrays)
         if scan_ready and any("path" in frame for frame in inputs.values()):
@@ -579,7 +631,10 @@ def _new_layout(ws: Workspace, loaded: dict, meta: dict) -> tuple[dict, dict, di
     if any((data_dir / "files_y" / s).exists() for s in ("val", "test")):
         errors.append("Validation/test mask files must remain in the hidden labels directory.")
     groups = meta.get("groups")
-    if not isinstance(groups, dict) or set(groups) != {"train", "val", "test"}:
+    random_ok = groups is None and _random_split_ok(meta)  # no groups to align; _split_errors reports why
+    if random_ok:
+        groups = {}
+    elif not isinstance(groups, dict) or set(groups) != {"train", "val", "test"}:
         errors.append("meta.json: groups must contain a row-aligned list for every split.")
         groups = {}
     for split in ("train", "val", "test"):
@@ -604,7 +659,9 @@ def _new_layout(ws: Workspace, loaded: dict, meta: dict) -> tuple[dict, dict, di
         if "y" in frame:
             errors.append(f"{split}: inputs must not contain y; labels belong in a separate table.")
         g = groups.get(split)
-        if (not isinstance(g, list) or len(g) != len(frame)
+        if random_ok:
+            pass
+        elif (not isinstance(g, list) or len(g) != len(frame)
                 or infer_dtype(g, skipna=False) not in {"string", "integer", "empty"}):
             errors.append(f"{split}: persisted groups must have one entry per input row.")
         elif frame.columns.is_unique:
