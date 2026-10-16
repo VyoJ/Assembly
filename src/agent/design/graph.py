@@ -18,6 +18,8 @@ async def write_prepare(state: DesignState) -> dict:
     ws, run_id = state["ws"], state["run_id"]
     report = state.get("report")
     feedback = "\n".join(report.messages) if report and not report.ok else "(first attempt)"
+    if report and not report.ok and report.log_tail and not report.checks.get("prepare_runs", True):
+        feedback += f"\n\nprepare.py output (last lines):\n```\n{report.log_tail[-3000:]}\n```"
     if state.get("error"):
         feedback = f"{state['error']}\n{prompts.FORMAT_REMINDER_PREPARE}"
     elif state.get("code") and report and not report.ok:

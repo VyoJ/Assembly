@@ -123,3 +123,22 @@ def test_unrepairable_code_raises_after_max_repairs(tmp_path, monkeypatch):
     with pytest.raises(EditError, match="still wrong"):
         asyncio.run(graph._validated(ws, "r", "import harness\nharness.finish(f)\n", "propose exp_000"))
     assert len(calls) == settings.max_repairs
+
+
+def test_design_retry_sees_prepare_traceback(tmp_path, monkeypatch):
+    from agent.design import graph as design
+    from core.contracts import ValidationReport
+
+    ws = _ws(tmp_path, monkeypatch)
+    seen = {}
+
+    async def fake_text(msgs, mock, **kw):
+        seen["user"] = msgs[-1].content
+        return "```python\nimport harness\n```"
+
+    monkeypatch.setattr(design.llm, "text", fake_text)
+    monkeypatch.setattr(design.ml_api, "static_check", lambda code: [])
+    report = ValidationReport(ok=False, checks={"prepare_runs": False}, messages=["prepare.py exited with code 1"],
+                              log_tail="Traceback ...\nKeyError: 'entity'")
+    asyncio.run(design.write_prepare({"run_id": "r", "ws": ws, "attempts": 1, "report": report, "code": "x = 1\n"}))
+    assert "KeyError: 'entity'" in seen["user"] and "Previous prepare.py" in seen["user"]

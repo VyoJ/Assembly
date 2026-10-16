@@ -66,7 +66,7 @@ Validation feedback from the previous attempt (fix these):
 {feedback}
 """
 
-PREPARE_FIX = """Your previous prepare.py ran but failed validation (messages above, with the code). Don't start over and
+PREPARE_FIX = """Your previous prepare.py crashed or failed validation (messages and output above, with the code). Don't start over and
 don't re-explore: change only what the messages ask for (at most 2 tool calls, only if you must check something),
 keep everything else, and reply with the complete corrected prepare.py in ONE ```python block."""
 
