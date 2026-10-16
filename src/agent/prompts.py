@@ -53,6 +53,8 @@ prepare.py must:
   meta={"split": "group", ...}) - X a DataFrame of feature columns only (no ids, groups or labels), y one label
   per row. meta MUST declare the split: "group" (groups disjoint across splits) or "temporal" (with "time_col");
   the validators reject the dataset otherwise. Validator messages that mention meta.json mean this meta dict.
+- build feature columns as a dict / list of Series and add them with ONE pd.concat(axis=1), not one df[col] = ...
+  at a time (that is slow and fragments the frame); prefer groupby(...).rolling / shift over transform(lambda)
 - be deterministic (fixed seeds) and reasonably fast
 
 Reply with the complete prepare.py in ONE ```python block, nothing else."""
@@ -197,6 +199,25 @@ PLAN_USER = """# task.json
 # Current best
 {best}
 """
+
+REPAIR_SYSTEM = """# Repairing code before it runs
+The train.py below failed a pre-run check (problems listed). Repair ONLY those problems with minimal edits; keep the
+experiment's idea and everything else unchanged. If a library argument doesn't exist in the installed version,
+remove it or move it where the installed API expects it (see the API notes in recipes/INDEX.md); one run_python
+call to inspect a signature is allowed.
+
+Reply with SEARCH/REPLACE blocks against the code below (preferred), or the complete fixed train.py in ONE
+```python block. No HYPOTHESIS/DESCRIPTION needed."""
+
+REPAIR_USER = """# Code
+```python
+{code}```
+
+# Problems
+{problems}
+"""
+
+REPAIR_FINAL = "Reply now with SEARCH/REPLACE blocks (or the complete fixed train.py in one ```python block)."
 
 FORMAT_REMINDER = """Reply now WITHOUT more tool calls, in exactly this format:
 HYPOTHESIS: <one sentence>

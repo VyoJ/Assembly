@@ -31,7 +31,7 @@ async def printer(run_id: str) -> None:
             print(f"--- {'revised ' if e['revision'] else ''}plan ---\n{e['plan']}\n---")
         elif e["type"] == "tool_call":
             print(f"  tool {e['tool']}")
-        elif e["type"] in ("validation", "research_done", "proposal_invalid", "fix"):
+        elif e["type"] in ("validation", "research_done", "proposal_invalid", "fix", "repair"):
             print({k: v for k, v in e.items() if k not in ("ts", "run_id", "best")})
 
 

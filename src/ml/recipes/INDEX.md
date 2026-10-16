@@ -16,7 +16,8 @@ borrow what helps. They use only the `harness.py` API described in `program.md`.
   all data, build a new model with `n_estimators=best_iteration + 1` and no early stopping.
   `xgb.callback.EarlyStopping(rounds=..., save_best=...)`.
 - LightGBM: early stopping is a callback in `fit()`: `fit(X, y, eval_set=[(Xv, yv)],
-  callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)])`; there is no `early_stopping_rounds` argument.
+  callbacks=[lgb.early_stopping(50), lgb.log_evaluation(0)])`; there is no `early_stopping_rounds` and no `verbose`
+  argument in `fit()`. Silence training logs with `verbose=-1` in the CONSTRUCTOR and `lgb.log_evaluation(0)`.
 - scikit-learn: anything inside a `Pipeline` must be an estimator (subclass `BaseEstimator` + `RegressorMixin` /
   `TransformerMixin`, implement `fit` / `predict` or `transform`). To clip or transform the target, prefer
   `TransformedTargetRegressor` or a `FunctionTransformer` step; `FunctionTransformer(..., feature_names_out=...)`

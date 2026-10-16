@@ -87,3 +87,39 @@ def test_fix_history_shows_earlier_attempt_outcomes(tmp_path, monkeypatch):
     assert "Attempt 1: exp_002 -> exp_003: drop callback" in text and "Must have at least 1" in text
     assert "Attempt 2" in text and "the failure shown above" in text
     assert graph._render_fix_history(ws, [], "exp_001").startswith("(none")
+
+
+def test_failed_pre_run_check_is_repaired_with_targeted_edit(tmp_path, monkeypatch):
+    ws = _ws(tmp_path, monkeypatch)
+    bad = "import harness\nm.fit(X, y, verbose=False)\nharness.finish(f)\n"
+    monkeypatch.setattr(graph.ml_api, "static_check",
+                        lambda code: ["line 2: LGBMRegressor.fit() has no argument 'verbose'"] if "verbose" in code else [])
+    monkeypatch.setattr(graph.ml_api, "read_workspace_file", lambda ws, name: "program")
+    replies = ["<<<<<<< SEARCH\nm.fit(X, y, verbose=False)\n=======\nm.fit(X, y)\n>>>>>>> REPLACE"]
+
+    async def fake_text(msgs, mock, **kw):
+        assert "has no argument 'verbose'" in msgs[-1].content  # the repair sees the exact problem
+        return replies.pop(0)
+
+    monkeypatch.setattr(graph.llm, "text", fake_text)
+    fixed = asyncio.run(graph._validated(ws, "r", bad, "propose exp_001"))
+    assert fixed == "import harness\nm.fit(X, y)\nharness.finish(f)\n"
+
+
+def test_unrepairable_code_raises_after_max_repairs(tmp_path, monkeypatch):
+    ws = _ws(tmp_path, monkeypatch)
+    monkeypatch.setattr(graph.ml_api, "static_check", lambda code: ["still wrong"])
+    monkeypatch.setattr(graph.ml_api, "read_workspace_file", lambda ws, name: "program")
+    calls = []
+
+    async def fake_text(msgs, mock, **kw):
+        calls.append(1)
+        return "```python\nimport harness\nharness.finish(f)\n```"
+
+    monkeypatch.setattr(graph.llm, "text", fake_text)
+    import pytest
+
+    from agent.research.edits import EditError
+    with pytest.raises(EditError, match="still wrong"):
+        asyncio.run(graph._validated(ws, "r", "import harness\nharness.finish(f)\n", "propose exp_000"))
+    assert len(calls) == settings.max_repairs

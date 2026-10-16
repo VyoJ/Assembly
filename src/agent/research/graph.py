@@ -174,11 +174,15 @@ async def propose(state: ResearchState) -> dict:
         final_instruction=prompts.FORMAT_REMINDER,
         trace=_tracer(ws, f"propose {exp_id}"),
     )
-    try:
+    try:  # unusable reply (no code, SEARCH not found): ask again
         proposal = parse_proposal(reply)
         code = apply_edits(best_code, proposal.edits)
-        check_train_py(code)
-        await _static_problems(code)
+    except EditError as e:
+        bus.emit(run_id, "proposal_invalid", task_id=ws.task_id, error=str(e))
+        return {"pending_code": None, "feedback": f"{e}\n{prompts.FORMAT_REMINDER}",
+                "bad_proposals": state.get("bad_proposals", 0) + 1}
+    try:  # code that fails the pre-run checks gets targeted repairs, not a rewrite from scratch
+        code = await _validated(ws, run_id, code, f"propose {exp_id}")
         dup = _duplicate_of(ws, code)
         if dup:
             raise EditError(f"This train.py is the same code as {dup}, which was already run. Try a different "
@@ -186,10 +190,11 @@ async def propose(state: ResearchState) -> dict:
     except EditError as e:
         bus.emit(run_id, "proposal_invalid", task_id=ws.task_id, error=str(e))
         return {"pending_code": None, "feedback": f"{e}\n{prompts.FORMAT_REMINDER}",
-                "bad_proposals": state.get("bad_proposals", 0) + 1}
+                "rejected_proposals": state.get("rejected_proposals", 0) + 1}
     bus.emit(run_id, "proposal", task_id=ws.task_id, exp_id=exp_id,
              hypothesis=proposal.hypothesis, description=proposal.description)
     return {"pending_code": code, "feedback": "", "fix_attempts": 0, "fix_history": [],
+            "bad_proposals": 0, "rejected_proposals": 0,
             "pending_meta": {"hypothesis": proposal.hypothesis, "description": proposal.description}}
 
 
@@ -204,12 +209,41 @@ async def run(state: ResearchState) -> dict:
     return {"last": result, "best": ws_files.best_result(ws), "n_exp": state.get("n_exp", 0) + 1, "pending_code": None}
 
 
-async def _static_problems(code: str) -> None:
-    """Raise EditError (-> feedback, no experiment spent) if the code calls installed APIs with wrong arguments."""
+async def _check(code: str) -> None:
+    """Pre-run checks (no experiment spent): syntax, harness.finish, and calls vs the INSTALLED library APIs."""
+    check_train_py(code)
     problems = await asyncio.to_thread(ml_api.static_check, code)
     if problems:
-        raise EditError("Pre-run check against the INSTALLED library versions found problems (fix these; check "
-                        "signatures with run_python if unsure):\n" + "\n".join(f"- {p}" for p in problems[:10]))
+        raise EditError("Pre-run check against the INSTALLED library versions found problems (check signatures with "
+                        "run_python if unsure):\n" + "\n".join(f"- {p}" for p in problems[:10]))
+
+
+async def _validated(ws, run_id: str, code: str, step: str) -> str:
+    """Return code that passes _check, repairing it with up to settings.max_repairs targeted SEARCH/REPLACE edits
+    of THIS code. Re-proposing from scratch tends to reintroduce the same habit (e.g. a removed argument)."""
+    try:
+        await _check(code)
+        return code
+    except EditError as e:
+        problems = str(e)
+    for i in range(settings.max_repairs):
+        bus.emit(run_id, "repair", task_id=ws.task_id, step=step, attempt=i + 1, problems=problems[:1000])
+        reply = await llm.text(
+            llm.messages(ml_api.read_workspace_file(ws, "program.md") + "\n\n" + prompts.REPAIR_SYSTEM,
+                         prompts.REPAIR_USER.format(code=code, problems=problems)),
+            mock=lambda: "",
+            tools=research_tools(ws), max_tool_calls=1,  # one signature check if needed
+            on_tool_call=_tool_event(run_id, ws),
+            final_instruction=prompts.REPAIR_FINAL,
+            trace=_tracer(ws, f"repair {step} #{i + 1}"),
+        )
+        try:
+            code = apply_edits(code, parse_proposal(reply).edits)
+            await _check(code)
+            return code
+        except EditError as e:
+            problems = str(e)
+    raise EditError(problems)
 
 
 def _render_fix_history(ws, history: list[dict], current: str) -> str:
@@ -257,8 +291,7 @@ async def fix(state: ResearchState) -> dict:
     try:
         proposal = parse_proposal(reply)
         code = apply_edits(failing, proposal.edits)
-        check_train_py(code)
-        await _static_problems(code)
+        code = await _validated(ws, run_id, code, f"fix {last.exp_id}")
     except EditError as e:
         bus.emit(run_id, "proposal_invalid", task_id=ws.task_id, error=f"fix: {e}")
         return {"fix_attempts": attempts, "pending_code": None, "feedback": f"{e}\n{prompts.FORMAT_REMINDER}"}

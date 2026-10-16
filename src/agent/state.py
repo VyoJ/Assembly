@@ -50,7 +50,8 @@ class ResearchState(TypedDict, total=False):
     pending_code: str | None
     pending_meta: dict
     fix_attempts: int
-    bad_proposals: int
+    bad_proposals: int  # unusable replies in a row
+    rejected_proposals: int  # failed pre-run checks (after repairs) / exact repeats, in a row
     feedback: str
     stop_reason: str | None
     plan_at: int  # n_exp when plan.md was last written

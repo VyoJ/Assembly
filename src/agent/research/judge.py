@@ -7,7 +7,8 @@ from core.config import settings
 from ml import workspace as ws_files
 
 FAILED = ("crash", "timeout", "invalid_output")
-MAX_BAD_PROPOSALS = 4
+MAX_BAD_PROPOSALS = 4  # unusable replies in a row (no code, SEARCH not found)
+MAX_REJECTED_PROPOSALS = 6  # in a row: failed pre-run checks even after repairs, or exact repeats
 
 
 def _experiments_since_best(state: ResearchState) -> int:
@@ -28,6 +29,8 @@ def stop_reason(state: ResearchState) -> str | None:
         return "time_budget"
     if state.get("bad_proposals", 0) >= MAX_BAD_PROPOSALS:
         return "too_many_invalid_proposals"
+    if state.get("rejected_proposals", 0) >= MAX_REJECTED_PROPOSALS:
+        return "too_many_rejected_proposals"
     if best is not None and _experiments_since_best(state) >= settings.plateau_n:
         return "plateau"
     return None
