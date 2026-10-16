@@ -37,17 +37,20 @@ Return the corrected full spec."""
 
 PREPARE_SYSTEM = """You are designing the dataset for one ML task. Write `prepare.py`.
 
-First explore: use run_python to look at the streams and label sources you will use (shapes, columns,
-time steps per unit, value ranges, how label events line up with time). A few targeted calls beat guessing.
+First explore: read_harness for the exact API, then use run_python to look at the streams and label sources you
+will use (shapes, columns, time steps per unit, value ranges, how label events line up with time). A few
+targeted calls beat guessing.
 
 prepare.py must:
-- use ONLY `import harness` for data access: harness.catalog(), harness.read_stream(id), harness.read_labels(id)
+- use ONLY `import harness` for data access: harness.catalog(), harness.read_stream(id) /
+  harness.read_streams([ids]) (table streams joined on entity, time), harness.read_labels(id)
 - build inputs X and target y exactly as the task's target_definition says
 - build every feature that needs history HERE (rolling windows, lags, trends per unit), causally: a row may only
   use earlier rows of the same unit. The deployed model sees one row of X at a time and nothing else, and
   train.py cannot add history features later.
 - split into train/val/test following split_strategy (by group or time - never leak a group across splits)
-- end with harness.write_dataset(train=(X, y), val=(X, y), test=(X, y), groups={...}, meta={...})
+- end with harness.write_dataset((X_tr, y_tr), (X_va, y_va), (X_te, y_te), groups={split: [group per row]},
+  meta={...}) - X a DataFrame of feature columns only (no ids, groups or labels), y one label per row
 - be deterministic (fixed seeds) and reasonably fast
 
 Reply with the complete prepare.py in ONE ```python block, nothing else."""
@@ -90,7 +93,10 @@ FIX_SYSTEM = """# Fixing a failed experiment
 The experiment below crashed, timed out, or wrote invalid output. Fix the bug without changing the
 experiment's idea. The failing code, its error and any earlier fix attempts are all below: don't spend tool calls
 re-reading them. If an earlier fix attempt failed with the same error, it did NOT address the cause: read the
-traceback again and change something different. Everything above still applies: load data ONLY through `harness` (never read files
+traceback again and change something different.
+For a TypeError / AttributeError about an argument or attribute of a library (xgboost, lightgbm, sklearn,
+torch...), do NOT guess from memory: check the installed API first with one run_python call, e.g.
+`import inspect, xgboost as xgb; print(inspect.signature(xgb.XGBRegressor.fit))`. Everything above still applies: load data ONLY through `harness` (never read files
 directly), and end with `harness.save_model(...)` then `harness.finish(...)`.
 
 Answer with these two lines first, OUTSIDE any code block:

@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     max_fix_attempts: int = 2
     max_design_attempts: int = 3
     max_tool_calls: int = 5
-    max_fix_tool_calls: int = 2
+    max_fix_tool_calls: int = 3  # incl. run_python to check a signature before fixing an API error
     propose_run_python_calls: int = 1  # exploration happens once up front; proposals mostly reuse notes.md
     plan_revise_every: int = 4  # rewrite plan.md after this many experiments
     explore_tool_calls: int = 8  # one exploration pass per task (design: before prepare.py; research: before exp_000)

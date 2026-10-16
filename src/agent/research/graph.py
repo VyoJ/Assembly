@@ -178,6 +178,7 @@ async def propose(state: ResearchState) -> dict:
         proposal = parse_proposal(reply)
         code = apply_edits(best_code, proposal.edits)
         check_train_py(code)
+        await _static_problems(code)
         dup = _duplicate_of(ws, code)
         if dup:
             raise EditError(f"This train.py is the same code as {dup}, which was already run. Try a different "
@@ -201,6 +202,14 @@ async def run(state: ResearchState) -> dict:
     result = await asyncio.to_thread(ml_api.run_experiment, ws, state["pending_code"], state["pending_meta"], progress)
     bus.emit(run_id, "experiment", **result.model_dump())
     return {"last": result, "best": ws_files.best_result(ws), "n_exp": state.get("n_exp", 0) + 1, "pending_code": None}
+
+
+async def _static_problems(code: str) -> None:
+    """Raise EditError (-> feedback, no experiment spent) if the code calls installed APIs with wrong arguments."""
+    problems = await asyncio.to_thread(ml_api.static_check, code)
+    if problems:
+        raise EditError("Pre-run check against the INSTALLED library versions found problems (fix these; check "
+                        "signatures with run_python if unsure):\n" + "\n".join(f"- {p}" for p in problems[:10]))
 
 
 def _render_fix_history(ws, history: list[dict], current: str) -> str:
@@ -249,6 +258,7 @@ async def fix(state: ResearchState) -> dict:
         proposal = parse_proposal(reply)
         code = apply_edits(failing, proposal.edits)
         check_train_py(code)
+        await _static_problems(code)
     except EditError as e:
         bus.emit(run_id, "proposal_invalid", task_id=ws.task_id, error=f"fix: {e}")
         return {"fix_attempts": attempts, "pending_code": None, "feedback": f"{e}\n{prompts.FORMAT_REMINDER}"}

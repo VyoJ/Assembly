@@ -203,6 +203,17 @@ def run_prepare(ws: Workspace, prepare_py: str) -> ValidationReport:
     return report
 
 
+def static_check(code: str) -> list[str]:
+    """Problems found by ml.static_check (keyword arguments the installed libraries don't accept, undefined
+    names). Runs in a subprocess because it imports the libraries the code uses; never executes the code."""
+    try:
+        out = subprocess.run([sys.executable, "-m", "ml.static_check"], input=code, capture_output=True,
+                             text=True, timeout=120, check=False)
+        return json.loads(out.stdout or "[]")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return []  # the check is advisory: never block a run because the checker itself failed
+
+
 SNIPPET_TIMEOUT_S = 60
 SNIPPET_MAX_CHARS = 4000
 

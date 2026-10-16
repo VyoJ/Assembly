@@ -11,6 +11,7 @@ from agent.tools import design_tools
 from core.config import settings
 from core.events import bus
 from ml import api as ml_api
+from ml import workspace as ws_files
 
 
 async def write_prepare(state: DesignState) -> dict:
@@ -29,10 +30,16 @@ async def write_prepare(state: DesignState) -> dict:
         # first attempt explores the raw streams; retries mostly fix validation messages
         max_tool_calls=settings.explore_tool_calls if not state.get("attempts") else settings.max_tool_calls,
         on_tool_call=lambda name, args: bus.emit(run_id, "tool_call", task_id=ws.task_id, tool=name, args=args),
+        final_instruction=prompts.FORMAT_REMINDER_PREPARE,
+        trace=lambda d: ws_files.log_llm_call(ws, {"step": f"design attempt {state.get('attempts', 0) + 1}", **d}),
     )
     code = extract_code(reply)
     if code is None:
         return {"error": "Your reply had no ```python block.", "code": ""}
+    problems = await asyncio.to_thread(ml_api.static_check, code)
+    if problems:  # wrong arguments for the installed libraries: fix before running prepare.py
+        return {"error": "Pre-run check against the INSTALLED library versions found problems:\n"
+                + "\n".join(f"- {p}" for p in problems[:10]), "code": ""}
     return {"code": code, "error": ""}
 
 

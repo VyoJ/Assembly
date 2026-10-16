@@ -66,7 +66,11 @@ def _run_python_tool(ws: Workspace, phase: str) -> StructuredTool:
 
 
 def design_tools(ws: Workspace) -> list[BaseTool]:
-    return [*(StructuredTool.from_function(f) for f in (list_catalog, peek_stream, read_recipe)),
+    def read_harness() -> str:
+        """Read harness.py: the exact API prepare.py uses (catalog, read_stream(s), read_labels, write_dataset)."""
+        return ml_api.read_workspace_file(ws, "harness.py")
+
+    return [*(StructuredTool.from_function(f) for f in (list_catalog, peek_stream, read_recipe, read_harness)),
             _run_python_tool(ws, "design")]
 
 

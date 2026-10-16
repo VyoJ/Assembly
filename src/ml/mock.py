@@ -47,6 +47,10 @@ def profile_streams(spec: TaskSpec, streams: list[StreamInfo]) -> list[StreamPro
     return out
 
 
+def static_check(code: str) -> list[str]:
+    return []
+
+
 def run_snippet(ws: Workspace, code: str, *, phase: str = "research") -> str:
     return f"[exit code 0, 0.1s] (mock {phase} snippet, {len(code)} chars)\nX: 14830 rows x 15 cols"
 

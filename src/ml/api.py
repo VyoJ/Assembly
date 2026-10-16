@@ -48,6 +48,11 @@ def run_prepare(ws: Workspace, prepare_py: str) -> ValidationReport:
     return mock.run_prepare(ws, prepare_py) if settings.ml_mock else runner.run_prepare(ws, prepare_py)
 
 
+def static_check(code: str) -> list[str]:
+    """Pre-run check of agent code against the installed library signatures (see ml.static_check)."""
+    return mock.static_check(code) if settings.ml_mock else runner.static_check(code)
+
+
 def run_snippet(ws: Workspace, code: str, phase: str = "research") -> str:
     """Run a short read-only exploration script in the workspace sandbox; returns its capped output."""
     return mock.run_snippet(ws, code, phase=phase) if settings.ml_mock else runner.run_snippet(ws, code, phase=phase)

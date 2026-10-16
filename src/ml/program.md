@@ -26,7 +26,10 @@ otherwise it's discarded and the next experiment starts from the best `train.py`
 
 ## Rules
 1. Only edit `train.py`. Never write to `data/`, `task.json`, `prepare.py`, or `harness.py`.
-2. Only import packages listed in `data_card.md`. Write code for those exact versions. No pip installs.
+2. Only import packages listed in `data_card.md`. Write code for those exact versions (APIs change between
+   versions; see the API notes in `recipes/INDEX.md`). If unsure of an argument, check it with `run_python`
+   (`inspect.signature(...)`) instead of guessing. Code is checked against the installed signatures before it
+   runs. No pip installs.
 3. No network. Load pretrained weights only via `harness.weights(name)`.
 4. Size training with `harness.time_left()`: stop training before it hits 0. (A later full-train
    stage reruns your best `train.py` with a bigger budget, so budget-aware code automatically trains longer.)
