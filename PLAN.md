@@ -75,6 +75,35 @@ Expect to iterate `program.md` and the prompts at b and c; that's the real work 
 because the simulator sends synthetic values a real model can't use, demo with the predictor's `{"replay": i}` mode.
 Keep `runs/{run}/events.jsonl` from the first good run as the first fallback demo.
 
+### Phase 1 status (17 Oct)
+
+Steps a–d pass with the real LLM (Token Factory) and real ML on C-MAPSS:
+- b (hand-written prepare): best val RMSE 13.84–14.78; c (LLM writes prepare): valid dataset, 5 experiments, 0 crashes.
+- d (full pipeline from the goal text, ~32 min): 2 tasks; "fails within 30 cycles" PASSED on the hidden test split
+  (recall 0.982, false alarm rate 0.047); remaining-life task failed early_warning_recall (0.876 < 0.9).
+
+Known issues (deferred; expect more once vision / signal tasks are added):
+1. **Discovery keeps the distractor streams** (HVAC, shift counter, hall noise: relevance 1.0, used by a task).
+   `profiling.py` only drops constant / missing streams; "relevance" is the finite fraction. Needs a target-aware
+   score (e.g. per-unit trend vs time-to-failure) + LLM confirmation. Demo step 3 depends on it. Owner: Andres.
+2. Replan can save a SEARCH/REPLACE edit as plan.md: reject edit markers / code, keep the old plan.
+3. "Skip" artefacts in LLM text (e.g. "...per press unit)Skip."): strip in `llm.clean_reply`.
+4. The report converts metrics into units we don't define ("1 false alarm per 21 cycles, well under 1 per
+   shift"): give it only measured metrics and forbid unit conversions.
+5. Design's first attempt still forgets `meta["split"]` (fixed on attempt 2): `write_dataset` could default to
+   "group" when groups are given, with a warning.
+6. Design can resubmit an unchanged prepare.py after a crash (step e: same code twice despite the traceback, then
+   failed 3/3 on a pandas `rolling.apply` TypeError): reject identical resubmissions with feedback; consider 4-5
+   design attempts.
+7. **Live stream predictions are constant with real models** (step e: 76.764 every tick). The simulator sends
+   synthetic per-stream values, not the feature columns the model was trained on (rolling windows etc.).
+   `predict({"replay": i})` works. Fix in Phase 3: the simulator replays real test rows (or the deployed task's
+   own `prepare.py` features) so the live dashboard shows real predictions.
+
+Step e (API, 17 Oct) passes: POST /runs with approval, SSE events, awaiting_approval status with specs + data
+cards, approve (second approve -> 409), research -> full train -> final test -> report -> deploy, experiments and
+deployments endpoints, predict (replay) and the live SSE stream all work with real ML + LLM.
+
 ### Phase 2: experiments on Daytona
 
 1. `ml/executor.py`, `EXECUTOR=local|daytona`. Under Daytona, per task: create one sandbox from a prebuilt snapshot
