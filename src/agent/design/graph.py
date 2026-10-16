@@ -21,14 +21,15 @@ async def write_prepare(state: DesignState) -> dict:
     if state.get("error"):
         feedback = f"{state['error']}\n{prompts.FORMAT_REMINDER_PREPARE}"
     elif state.get("code") and report and not report.ok:
-        feedback += f"\n\nPrevious prepare.py:\n```python\n{state['code']}```"
+        feedback += f"\n\nPrevious prepare.py:\n```python\n{state['code']}```\n\n{prompts.PREPARE_FIX}"
+    fixing = bool(state.get("code") and report and not report.ok)
     bus.emit(run_id, "design_attempt", task_id=ws.task_id, attempt=state.get("attempts", 0) + 1)
     reply = await llm.text(
         llm.messages(prompts.PREPARE_SYSTEM, prompts.PREPARE_USER.format(spec=ws.spec.model_dump_json(indent=2), feedback=feedback)),
         mock=lambda: mock_llm.prepare(ws.spec, feedback if report else ""),
         tools=design_tools(ws),
-        # first attempt explores the raw streams; retries mostly fix validation messages
-        max_tool_calls=settings.explore_tool_calls if not state.get("attempts") else settings.max_tool_calls,
+        # first attempt explores the raw streams; a validation fix is a targeted edit of the previous code
+        max_tool_calls=2 if fixing else settings.explore_tool_calls if not state.get("attempts") else settings.max_tool_calls,
         on_tool_call=lambda name, args: bus.emit(run_id, "tool_call", task_id=ws.task_id, tool=name, args=args),
         final_instruction=prompts.FORMAT_REMINDER_PREPARE,
         trace=lambda d: ws_files.log_llm_call(ws, {"step": f"design attempt {state.get('attempts', 0) + 1}", **d}),

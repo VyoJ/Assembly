@@ -50,7 +50,9 @@ prepare.py must:
   train.py cannot add history features later.
 - split into train/val/test following split_strategy (by group or time - never leak a group across splits)
 - end with harness.write_dataset((X_tr, y_tr), (X_va, y_va), (X_te, y_te), groups={split: [group per row]},
-  meta={...}) - X a DataFrame of feature columns only (no ids, groups or labels), y one label per row
+  meta={"split": "group", ...}) - X a DataFrame of feature columns only (no ids, groups or labels), y one label
+  per row. meta MUST declare the split: "group" (groups disjoint across splits) or "temporal" (with "time_col");
+  the validators reject the dataset otherwise. Validator messages that mention meta.json mean this meta dict.
 - be deterministic (fixed seeds) and reasonably fast
 
 Reply with the complete prepare.py in ONE ```python block, nothing else."""
@@ -61,6 +63,10 @@ PREPARE_USER = """Task spec:
 Validation feedback from the previous attempt (fix these):
 {feedback}
 """
+
+PREPARE_FIX = """Your previous prepare.py ran but failed validation (messages above, with the code). Don't start over and
+don't re-explore: change only what the messages ask for (at most 2 tool calls, only if you must check something),
+keep everything else, and reply with the complete corrected prepare.py in ONE ```python block."""
 
 RESEARCH_USER = """# task.json
 {spec}

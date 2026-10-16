@@ -201,7 +201,8 @@ def _split_errors(inputs: dict, meta: dict, metadata_errors: list[str]) -> tuple
         ]
     if metadata_errors or strategy not in ("group", "temporal"):
         errors = metadata_errors or [
-            "meta.json: split must explicitly be 'group' or 'temporal' ('random' only for standalone image files)."
+            ("meta.json: split must explicitly be 'group' or 'temporal' ('random' only for standalone image files). "
+            "In prepare.py pass it to the harness: harness.write_dataset(..., groups=..., meta={'split': 'group', ...}).")
         ]
         return errors, errors, []
     errors, notes = [], []
