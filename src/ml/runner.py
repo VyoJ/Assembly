@@ -17,25 +17,20 @@ import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
-import threading
-import time
-from collections import deque
 from pathlib import Path
 
 from core.config import settings
 from core.contracts import ExperimentResult, FinalReport, ValidationReport, Workspace
 from ml import data_overview, scoring, validators, workspace
+from ml.executors import LineSink, get_executor
+from ml.executors.local import run_process
 
 PREPARE_TIMEOUT_S = 900
 KILL_FACTOR = 2.0  # hard kill at KILL_FACTOR x budget (+ grace for loading data and writing predictions)
 KILL_GRACE_S = 60
-LOG_TAIL_LINES = 40
-PROGRESS_MIN_INTERVAL_S = 0.5
 _SECRET = re.compile(r"(^LLM_|^ASSEMBLY_|KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)", re.IGNORECASE)
-_KV = re.compile(r"([A-Za-z_][\w./-]*)\s*[=:]\s*(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)")
 
 
 # ---------------------------------------------------------------- subprocess plumbing
@@ -59,58 +54,15 @@ def _env(ws: Workspace, exp_dir: Path | None, budget_s: float, *, prepare: bool)
     return env
 
 
-def _parse_progress(line: str) -> dict:
-    """'epoch=3 loss=0.124 val_rmse: 17.2' -> {"epoch": 3, "loss": 0.124, "val_rmse": 17.2}"""
-    out = {}
-    for k, v in _KV.findall(line):
-        num = float(v)
-        out[k] = int(num) if num.is_integer() and "." not in v and "e" not in v.lower() else num
-    return out
-
-
 def _run(cmd: list[str], cwd: Path, env: dict, timeout_s: float, log_path: Path, progress=None, tag: dict | None = None):
-    """Run cmd, tee stdout+stderr to log_path, forward throttled progress. -> (returncode | None on timeout, tail, secs)."""
-    tail: deque[str] = deque(maxlen=LOG_TAIL_LINES)
-    t0 = time.monotonic()
-    with log_path.open("w") as log:
-        proc = subprocess.Popen(
-            cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-            start_new_session=True,  # own process group, so the kill also takes dataloader workers etc.
-        )
-
-        def pump() -> None:
-            last_emit = 0.0
-            for line in proc.stdout:
-                log.write(line)
-                tail.append(line.rstrip("\n"))
-                if progress and time.monotonic() - last_emit >= PROGRESS_MIN_INTERVAL_S:
-                    last_emit = time.monotonic()
-                    try:
-                        progress({**(tag or {}), "line": line.rstrip()[-300:], **_parse_progress(line)})
-                    except Exception as e:  # noqa: BLE001 - a UI callback must never kill a run
-                        log.write(f"[runner] progress callback failed: {e!r}\n")
-
-        reader = threading.Thread(target=pump, daemon=True)
-        reader.start()
-        try:
-            rc = proc.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            _kill(proc)
-            rc = None
-        reader.join(timeout=5)
-    return rc, "\n".join(tail), time.monotonic() - t0
-
-
-def _kill(proc: subprocess.Popen) -> None:
+    """Run cmd locally, tee output to log_path, forward throttled progress. -> (returncode | None on timeout, tail, secs).
+    Used for prepare.py and snippets; train.py goes through the configured executor (see _execute)."""
+    sink = LineSink(log_path, progress, tag)
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
-        proc.wait(timeout=10)
-    except (ProcessLookupError, subprocess.TimeoutExpired):
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        proc.wait()
+        rc, secs = run_process(cmd, cwd, env, timeout_s, sink)
+    finally:
+        sink.close()
+    return rc, sink.tail_text(), secs
 
 
 def _read_json(path: Path) -> dict:
@@ -150,10 +102,16 @@ def _execute(ws: Workspace, run_dir: Path, budget_s: float, base: dict, progress
     (record_experiment turns 'discard' into 'keep' when it beats the best)."""
     env = _env(ws, run_dir, budget_s, prepare=False)
     timeout = budget_s * KILL_FACTOR + KILL_GRACE_S
-    rc, tail, secs = _run(
-        [sys.executable, str(run_dir / "train.py")], Path(ws.path), env, timeout, run_dir / "run.log",
-        progress, {"exp_id": base["exp_id"]},
-    )
+    sink = LineSink(run_dir / "run.log", progress, {"exp_id": base["exp_id"]})
+    try:
+        rc, secs = get_executor(settings.executor).run(ws, run_dir, env=env, budget_s=budget_s, timeout_s=timeout,
+                                                       sink=sink)
+    except Exception as e:  # noqa: BLE001 - infrastructure failure (sandbox, network): report as a crash
+        sink.line(f"[runner] executor '{settings.executor}' failed: {e!r}")
+        rc, secs = 1, 0.0
+    finally:
+        sink.close()
+    tail = sink.tail_text()
     base = {**base, "train_seconds": round(secs, 1), "log_tail": tail}
     if rc is None:
         return ExperimentResult(status="timeout", **{**base, "log_tail": f"{tail}\n[runner] killed after {timeout:.0f}s "
@@ -239,6 +197,11 @@ def run_snippet(ws: Workspace, code: str, *, phase: str = "research") -> str:
         out = f"{out[:half]}\n...({len(out) - SNIPPET_MAX_CHARS} chars cut)...\n{out[-half:]}"
     status = "timed out" if rc is None else f"exit code {rc}"
     return f"[{status}, {secs:.1f}s]\n{out or '(no output; print what you want to see)'}"
+
+
+def release(ws: Workspace) -> None:
+    """Free remote compute held for this task (no-op for the local executor)."""
+    get_executor(settings.executor).release(ws)
 
 
 def run_experiment(ws: Workspace, train_py: str, meta: dict, progress=None) -> ExperimentResult:

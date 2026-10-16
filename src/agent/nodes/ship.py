@@ -43,6 +43,8 @@ async def final_gate(state: OuterState) -> dict:
         report = await asyncio.to_thread(ml_api.final_test, ws)
         reports[tid] = report
         bus.emit(run_id, "final_test", **report.model_dump())
+    for ws in state["workspaces"].values():  # no more training after this point: free remote compute
+        await asyncio.to_thread(ml_api.release, ws)
 
     lines = []
     for tid, r in reports.items():

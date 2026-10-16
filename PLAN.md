@@ -119,6 +119,19 @@ deployments endpoints, predict (replay) and the live SSE stream all work with re
 5. Check first: Daytona says free credits can't pay for GPU sandboxes; confirm what the $300 is, and GPU prices on
    the billing dashboard. On-demand GPUs queue for capacity; spot GPUs need Tier 2 and can be preempted.
 
+**Status (17 Oct): CPU path works.** `EXECUTOR=daytona` in `.env` (default `local`). Free credits don't cover
+GPUs, so GPU training will come from another provider (e.g. Modal): a new `ml/executors/<provider>.py` subclassing
+`RemoteExecutor` and implementing its five primitives (create box, upload, download, exec / exec_stream, destroy).
+- `ml/executors/`: `base.py` (interface, LineSink, factory), `local.py`, `remote.py` (shared: one box per task,
+  code + workspace-input sync, env contract, run, fetch run dir back, release), `daytona.py`.
+- Snapshot `assembly-ml-cpu-<requirements hash>`: pinned to the LOCAL versions (so the pre-run static check matches),
+  CPU torch; built once (~5 min) with `uv run python scripts/daytona_setup.py` (`--list` / `--cleanup` for leftovers).
+- Sandbox: 4 vCPU / 8 GiB / 10 GiB, starts in ~4 s, outbound network blocked, thread counts capped to 4 (the box
+  reports 48 host cores), auto-stop 30 min + auto-delete as a safety net; released after the final gate.
+- Step b on Daytona: 4 experiments, 0 crashes, best val RMSE 14.43; ~5-8 s overhead per experiment.
+- Not yet: file inputs (images / recordings are stored as absolute local paths; remote runs refuse them with a
+  clear error), weights > 512 MB, full pipeline (step d) on Daytona with two tasks in parallel.
+
 ### Phase 3: build out
 
 1. Vision (ML team): `specs/metal_nut_example.json` + `_prepare.py`, image anomaly recipe, cached weights; then two

@@ -37,6 +37,16 @@ class Settings(BaseSettings):
 
     device: Literal["auto", "cuda", "mps", "cpu"] = "auto"
 
+    # Where train.py runs (prepare.py and exploration snippets always run locally, next to the hidden labels)
+    executor: Literal["local", "daytona"] = "local"
+    daytona_api_key: str = ""
+    daytona_snapshot: str = ""  # override the auto-named snapshot (assembly-ml-cpu-<requirements hash>)
+    daytona_cpu: int = 4
+    daytona_memory_gb: int = 8
+    daytona_disk_gb: int = 10
+    daytona_auto_stop_min: int = 30  # safety net if this process dies without releasing the sandbox
+    daytona_auto_delete_min: int = 0  # 0 = delete as soon as it stops
+
     # Budgets
     budget_profile: Literal["research", "demo"] = "research"
     min_budget_s: int = 60

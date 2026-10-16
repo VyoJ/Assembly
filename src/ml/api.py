@@ -84,6 +84,12 @@ def final_test(ws: Workspace) -> FinalReport:
     return mock.final_test(ws) if settings.ml_mock else runner.final_test(ws)
 
 
+def release(ws: Workspace) -> None:
+    """Free remote compute (e.g. a Daytona sandbox) held for this task. Safe to call more than once."""
+    if not settings.ml_mock:
+        runner.release(ws)
+
+
 def package(ws: Workspace) -> str:
     return mock.package(ws) if settings.ml_mock else packaging.package(ws)
 

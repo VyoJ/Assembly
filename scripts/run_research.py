@@ -51,7 +51,10 @@ async def main(spec_path: str, n: int, prepare_path: str | None) -> None:
         print("design failed:", report.messages if report else "no prepare.py")
         return
     ws = ml_api.freeze(ws)
-    out = await run_research(run_id, ws)
+    try:
+        out = await run_research(run_id, ws)
+    finally:
+        await asyncio.to_thread(ml_api.release, ws)  # free remote compute (EXECUTOR=daytona)
     await asyncio.sleep(0.1)
     printer_task.cancel()
     print(f"\nstop: {out.get('stop_reason')}  best: {out['best'].exp_id if out.get('best') else None}")
