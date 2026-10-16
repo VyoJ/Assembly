@@ -9,8 +9,9 @@ task's KPIs pass on validation, then keep improving the score if budget remains.
 - `harness.py`: the ONLY way to load data, check time, save models, and submit predictions. Read-only.
 - `prepare.py`: how the dataset was built. Read-only.
 - `train.py`: **the only file you change.**
-- `results.tsv`: every experiment so far (score, KPIs passed, status, description).
+- `results.tsv`: every experiment so far (score, KPIs passed, status, description); shown to you with hypotheses.
 - `notes.md`: your own notes from exploring the data before experiment 0.
+- `plan.md`: your ranked research plan, revised every few experiments.
 - Recipes (`recipes/INDEX.md`): reference scripts you may read with the `read_recipe` tool and borrow from.
 
 Tools: `read_workspace_file` (prepare.py, harness.py, task.json, data_card.md, notes.md, data/meta.json),
@@ -68,7 +69,13 @@ otherwise it's discarded and the next experiment starts from the best `train.py`
 ## How to work
 - **Experiment 0:** write a simple, fast, robust baseline. Get a valid score first.
 - **After that:** one idea per experiment, with a clear hypothesis. Small, targeted edits beat rewrites.
-- Read `results.tsv`: don't repeat discarded ideas; build on what was kept.
+- Follow `plan.md`: take the next untried item, and say which item (or why you deviate) in the HYPOTHESIS.
+- Read the experiment history: never repeat an idea that was already tried (near-identical code is rejected).
+  Build on what was kept.
+- Check `notes.md` and the label stats before changing the target: don't re-apply what `prepare.py` already did
+  (e.g. a cap or transform that's already in `y`).
+- After two experiments that only tune hyperparameters of the same model without improving, switch direction:
+  a different model family, different features, calibration, or averaging your best models.
 - If a KPI is about a threshold (false-alarm rate, recall), tune the threshold on an internal split
   before changing the model.
 - Prefer simpler code at equal score. A tiny gain from a big messy change is not worth keeping.

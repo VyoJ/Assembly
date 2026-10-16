@@ -11,6 +11,7 @@ import difflib
 import json
 import shutil
 import stat
+import time
 from importlib import metadata
 from pathlib import Path
 
@@ -91,13 +92,20 @@ def read_file(ws: Workspace, name: str, max_chars: int = 20_000) -> str:
     return text if len(text) <= max_chars else text[:max_chars] + "\n...(truncated)"
 
 
-def write_notes(ws: Workspace, notes: str) -> None:
-    (ws_dir(ws) / "notes.md").write_text(notes.strip() + "\n")
+def write_text(ws: Workspace, name: str, text: str) -> None:
+    """Agent-loop documents in the workspace root (notes.md, plan.md)."""
+    (ws_dir(ws) / name).write_text(text.strip() + "\n")
 
 
-def read_notes(ws: Workspace) -> str | None:
-    p = ws_dir(ws) / "notes.md"
+def read_text(ws: Workspace, name: str) -> str | None:
+    p = ws_dir(ws) / name
     return p.read_text() if p.is_file() else None
+
+
+def log_llm_call(ws: Workspace, record: dict) -> None:
+    """Append one LLM call (step, final reply, tool calls) to llm_calls.jsonl for debugging."""
+    with (ws_dir(ws) / "llm_calls.jsonl").open("a") as f:
+        f.write(json.dumps({"ts": time.time(), **record}, default=str) + "\n")
 
 
 def write_prepare(ws: Workspace, code: str) -> None:

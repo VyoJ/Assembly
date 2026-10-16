@@ -85,8 +85,16 @@ _IDEAS = [
 
 
 def explore() -> str:
-    return ("- X: one row per unit and cycle, raw sensor columns + `time`; no group column (groups via harness.groups).\n"
-            "- y: remaining cycles, capped at 125.\n- Several sensors are near-constant. (mock notes)")
+    return ("## Notes\n"
+            "- X: one row per unit and cycle, raw sensor columns + `time`; no group column (groups via harness.groups).\n"
+            "- y: remaining cycles, capped at 125.\n- Several sensors are near-constant. (mock notes)\n\n"
+            f"## Plan\n{plan()}")
+
+
+def plan() -> str:
+    return ("1. [ ] Gradient-boosted baseline on all features (fast, valid score)\n"
+            "2. [ ] Calibrate the alarm threshold / shift for the false-alarm KPI\n"
+            "3. [ ] LightGBM or ExtraTrees for diversity, then average the best two (mock plan)")
 
 
 def propose(best_code: str | None, exp_id: str) -> str:
@@ -94,12 +102,14 @@ def propose(best_code: str | None, exp_id: str) -> str:
         return ("HYPOTHESIS: A simple gradient-boosted baseline on window features gives a valid first score.\n"
                 "DESCRIPTION: xgboost baseline on window features\n"
                 f"```python\n{_template('xgboost', 0.1, 30)}```")
-    var, value, hyp, desc = _IDEAS[int(exp_id.split('_')[1]) % len(_IDEAS)]
+    n = int(exp_id.split("_")[1])
+    var, value, hyp, desc = _IDEAS[n % len(_IDEAS)]
     m = re.search(rf"^{var} = .*$", best_code, re.MULTILINE)
     if not m:
         return f"HYPOTHESIS: {hyp}\nDESCRIPTION: {desc}\n```python\n{_template('xgboost', 0.07, 40)}```"
     return (f"HYPOTHESIS: {hyp}\nDESCRIPTION: {desc}\n"
-            f"<<<<<<< SEARCH\n{m.group(0)}\n=======\n{var} = {value}\n>>>>>>> REPLACE")
+            # TRIAL keeps each mock proposal distinct, so the duplicate check doesn't end mock runs early
+            f"<<<<<<< SEARCH\n{m.group(0)}\n=======\n{var} = {value}\nTRIAL_{n} = {n}\n>>>>>>> REPLACE")
 
 
 def fix(code: str) -> str:

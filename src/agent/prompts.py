@@ -68,14 +68,17 @@ RESEARCH_USER = """# task.json
 # notes.md (your exploration notes for this task)
 {notes}
 
+# plan.md (your research plan; pick the next untried item unless results say otherwise)
+{plan}
+
 # Recipes available (read with the read_recipe tool)
 {recipes}
 
 # Current best train.py
 {best_code}
 
-# results.tsv (most recent)
-{results}
+# Experiments so far (with hypotheses; never repeat one)
+{history}
 
 # Last experiment
 {last}
@@ -85,7 +88,9 @@ Propose experiment {exp_id}. You may use a few tool calls first, then answer in 
 
 FIX_SYSTEM = """# Fixing a failed experiment
 The experiment below crashed, timed out, or wrote invalid output. Fix the bug without changing the
-experiment's idea. Everything above still applies: load data ONLY through `harness` (never read files
+experiment's idea. The failing code, its error and any earlier fix attempts are all below: don't spend tool calls
+re-reading them. If an earlier fix attempt failed with the same error, it did NOT address the cause: read the
+traceback again and change something different. Everything above still applies: load data ONLY through `harness` (never read files
 directly), and end with `harness.save_model(...)` then `harness.finish(...)`.
 
 Answer with these two lines first, OUTSIDE any code block:
@@ -110,26 +115,75 @@ FIX_USER = """# task.json
 # Log tail
 {log_tail}
 
+# Earlier fix attempts for this experiment
+{previous}
+
 {feedback}"""
 
-EXPLORE_SYSTEM = """# Exploring the data (before experiment 0)
+EXPLORE_SYSTEM = """# Exploring the data and planning (before experiment 0)
 THIS STEP IS NOT AN EXPERIMENT. Ignore the experiment output format above: do NOT write train.py, a
 HYPOTHESIS/DESCRIPTION header, or any code in your answer. Experiment 0 comes in the next step.
 
-Before writing any train.py, find out what the data really looks like. Use run_python (`import harness`;
-harness.load_train(), harness.groups("train"), harness.load_val_inputs()) and read_workspace_file
-(prepare.py shows exactly how X and y were built). Check: columns and dtypes, rows per group and how rows
-relate in time, near-constant or redundant features, the target's distribution and how it relates to a few
-features, and anything that would break a naive baseline.
+First find out what the data really looks like. Use run_python (`import harness`; harness.load_train(),
+harness.groups("train"), harness.load_val_inputs()) and read_workspace_file (prepare.py shows exactly how X
+and y were built). Check: columns and dtypes, rows per group and how rows relate in time, near-constant or
+redundant features, the target's distribution and how it relates to a few features, and anything that would
+break a naive baseline.
 
-Then reply ONLY with concise markdown notes (max ~25 bullet points, no code blocks): facts you verified, pitfalls,
-and 2-3 concrete ideas for experiment 0 and after. These notes are shown to you in every later step."""
+Then reply with exactly these two sections, markdown, no code blocks:
+
+## Notes
+Concise bullet points (max ~20): facts you verified, pitfalls. Shown to you in every later step.
+
+## Plan
+A numbered list of 4-6 experiments, most promising first, one or two lines each:
+`N. [ ] <idea> - expected effect on which metric/KPI, why (cite your notes), cost (fast / slow)`.
+Item 1 is a simple, fast, robust baseline. Cover genuinely different directions (model family, features
+already in X, target handling, threshold / calibration, ensembling), not only hyperparameter tweaks, and
+don't plan what the data already has (e.g. a target cap that's already applied)."""
 
 EXPLORE_USER = """# task.json
 {spec}
 
 # data_card.md
 {data_card}
+"""
+
+EXPLORE_FINAL = """Stop exploring. Reply now with the two sections `## Notes` and `## Plan`, markdown, no code, no
+train.py, no HYPOTHESIS/DESCRIPTION lines."""
+
+NOTES_ONLY = """Write ONLY the `## Notes` section now: concise bullet points (facts you verified, pitfalls). No code."""
+
+PLAN_ONLY = """Write ONLY the `## Plan` section now: a numbered list of 4-6 experiments, most promising first,
+`N. [ ] <idea> - expected effect, why, cost`. No code."""
+
+REPLAN_SYSTEM = """# Revising the research plan
+Revise the research plan for this task using the results so far. THIS STEP IS NOT AN EXPERIMENT: no code,
+no train.py, no HYPOTHESIS/DESCRIPTION header. You may use read_workspace_file / read_experiment_file (at most
+2 calls) if you need to look at something; everything else you need is below.
+
+Reply with the revised plan only: a numbered markdown list of 4-6 experiments, most promising first,
+`N. [ ] <idea> - expected effect on which metric/KPI, why (cite notes / results), cost (fast / slow)`.
+Mark finished items `[x]` with their exp_id and outcome. Drop ideas the results ruled out, keep what worked,
+add new ones based on the evidence. Cover genuinely different directions, not only hyperparameter tweaks."""
+
+PLAN_USER = """# task.json
+{spec}
+
+# data_card.md
+{data_card}
+
+# notes.md
+{notes}
+
+# Current plan.md
+{plan}
+
+# Experiments so far
+{history}
+
+# Current best
+{best}
 """
 
 FORMAT_REMINDER = """Reply now WITHOUT more tool calls, in exactly this format:

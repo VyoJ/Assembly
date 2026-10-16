@@ -53,3 +53,6 @@ class ResearchState(TypedDict, total=False):
     bad_proposals: int
     feedback: str
     stop_reason: str | None
+    plan_at: int  # n_exp when plan.md was last written
+    replan_due: bool
+    fix_history: list[dict]  # fixes in the current chain: {of, runs_as, description, diff}

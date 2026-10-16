@@ -10,7 +10,7 @@ from core.contracts import Workspace
 from ml import api as ml_api
 
 RECIPES_DIR = Path(ml_api.__file__).resolve().parent / "recipes"
-READABLE = ("prepare.py", "harness.py", "task.json", "data_card.md", "notes.md", "data/meta.json")
+READABLE = ("prepare.py", "harness.py", "task.json", "data_card.md", "notes.md", "plan.md", "data/meta.json")
 
 
 def read_recipe(name: str) -> str:
@@ -37,7 +37,7 @@ def peek_stream(stream_id: str, n: int = 5) -> str:
 def _read_workspace_tool(ws: Workspace) -> StructuredTool:
     def read_workspace_file(name: str) -> str:
         """Read a workspace file: prepare.py (how X and y were built), harness.py (the data / submit API),
-        task.json, data_card.md, notes.md (your exploration notes) or data/meta.json."""
+        task.json, data_card.md, notes.md (your exploration notes), plan.md (your research plan) or data/meta.json."""
         if name not in READABLE:
             return f"(not readable: {name}; choose one of {list(READABLE)})"
         text = ml_api.read_workspace_file(ws, name)
@@ -70,10 +70,11 @@ def design_tools(ws: Workspace) -> list[BaseTool]:
             _run_python_tool(ws, "design")]
 
 
-def research_tools(ws: Workspace) -> list[BaseTool]:
+def research_tools(ws: Workspace, read_only: bool = False) -> list[BaseTool]:
     def read_experiment_file(exp_id: str, filename: str) -> str:
         """Read a file from a past experiment, e.g. ('exp_003', 'train.py') or ('exp_003', 'run.log')."""
         return ml_api.read_workspace_file(ws, f"{exp_id}/{filename}")
 
-    return [StructuredTool.from_function(read_recipe), StructuredTool.from_function(read_experiment_file),
-            _read_workspace_tool(ws), _run_python_tool(ws, "research")]
+    tools = [StructuredTool.from_function(read_recipe), StructuredTool.from_function(read_experiment_file),
+             _read_workspace_tool(ws)]
+    return tools if read_only else [*tools, _run_python_tool(ws, "research")]

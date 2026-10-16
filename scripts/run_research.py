@@ -27,6 +27,8 @@ async def printer(run_id: str) -> None:
             print(f"{e['exp_id']} {e['status']:>8} score={score} {e['description']}")
         elif e["type"] == "exploration":
             print(f"--- exploration notes ---\n{e['notes']}\n---")
+        elif e["type"] == "plan":
+            print(f"--- {'revised ' if e['revision'] else ''}plan ---\n{e['plan']}\n---")
         elif e["type"] == "tool_call":
             print(f"  tool {e['tool']}")
         elif e["type"] in ("validation", "research_done", "proposal_invalid", "fix"):
