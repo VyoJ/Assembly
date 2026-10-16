@@ -25,6 +25,10 @@ async def printer(run_id: str) -> None:
         if e["type"] == "experiment":
             score = f"{e['score']:.4f}" if e.get("score") is not None else "-"
             print(f"{e['exp_id']} {e['status']:>8} score={score} {e['description']}")
+        elif e["type"] == "exploration":
+            print(f"--- exploration notes ---\n{e['notes']}\n---")
+        elif e["type"] == "tool_call":
+            print(f"  tool {e['tool']}")
         elif e["type"] in ("validation", "research_done", "proposal_invalid", "fix"):
             print({k: v for k, v in e.items() if k not in ("ts", "run_id", "best")})
 

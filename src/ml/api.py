@@ -48,6 +48,11 @@ def run_prepare(ws: Workspace, prepare_py: str) -> ValidationReport:
     return mock.run_prepare(ws, prepare_py) if settings.ml_mock else runner.run_prepare(ws, prepare_py)
 
 
+def run_snippet(ws: Workspace, code: str, phase: str = "research") -> str:
+    """Run a short read-only exploration script in the workspace sandbox; returns its capped output."""
+    return mock.run_snippet(ws, code, phase=phase) if settings.ml_mock else runner.run_snippet(ws, code, phase=phase)
+
+
 def freeze(ws: Workspace) -> Workspace:
     return workspace.freeze(ws)
 

@@ -91,6 +91,15 @@ def read_file(ws: Workspace, name: str, max_chars: int = 20_000) -> str:
     return text if len(text) <= max_chars else text[:max_chars] + "\n...(truncated)"
 
 
+def write_notes(ws: Workspace, notes: str) -> None:
+    (ws_dir(ws) / "notes.md").write_text(notes.strip() + "\n")
+
+
+def read_notes(ws: Workspace) -> str | None:
+    p = ws_dir(ws) / "notes.md"
+    return p.read_text() if p.is_file() else None
+
+
 def write_prepare(ws: Workspace, code: str) -> None:
     (ws_dir(ws) / "prepare.py").write_text(code)
 

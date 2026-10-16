@@ -456,6 +456,7 @@ def _data_card(ws: Workspace, inputs: dict, meta: dict, checks: dict, messages: 
     if train is not None and train.columns.is_unique and train.columns.nlevels == 1:
         lines.extend(["", "## Feature schema", ""])
         lines.extend(f"- `{column}`: {train[column].dtype}" for column in _feature_columns(train))
+    lines.extend(["", "## Split metadata (NOT input columns; groups come from harness.groups(split))", ""])
     for key in ("group_col", "time_col"):
         value = meta.get(key)
         lines.append(f"- {key}: {value if isinstance(value, str) else 'unavailable'}")

@@ -10,7 +10,12 @@ task's KPIs pass on validation, then keep improving the score if budget remains.
 - `prepare.py`: how the dataset was built. Read-only.
 - `train.py`: **the only file you change.**
 - `results.tsv`: every experiment so far (score, KPIs passed, status, description).
+- `notes.md`: your own notes from exploring the data before experiment 0.
 - Recipes (`recipes/INDEX.md`): reference scripts you may read with the `read_recipe` tool and borrow from.
+
+Tools: `read_workspace_file` (prepare.py, harness.py, task.json, data_card.md, notes.md, data/meta.json),
+`run_python` (run a short script with `import harness` to inspect the data; 60 s, output capped),
+`read_recipe`, `read_experiment_file` (code and logs of past experiments).
 
 ## How you're scored
 After `train.py` runs, fixed scoring code compares your validation predictions with labels you
@@ -30,10 +35,14 @@ otherwise it's discarded and the next experiment starts from the best `train.py`
    prediction directly. Put any preprocessing
    (scaling, imputation, feature selection) INSIDE the model: an sklearn `Pipeline`, or inside the torch
    `nn.Module`. Torch models must output probabilities, not logits, for `binary_score` / `class_probs`.
-7. You have no validation labels. If you need early stopping, threshold tuning, or a self-check,
+7. **`X` is all the deployed model gets: one row at a time, no group, no other rows, no history.** Only use
+   transformations of a single row (scaling, ratios, column selection). Features that need history
+   (rolling windows, lags, per-unit trends) only exist if `prepare.py` already made them columns of `X`.
+   `harness.groups(...)` is for internal splits, never for features.
+8. You have no validation labels. If you need early stopping, threshold tuning, or a self-check,
    carve an internal split from the training data with `harness.groups("train")` (or time order) so
    the same unit never lands on both sides.
-8. Crashes, timeouts and malformed predictions are scored as failures and discarded.
+9. Crashes, timeouts and malformed predictions are scored as failures and discarded.
 
 ## Data and predictions
 - `X, y = harness.load_train()`; `harness.load_val_inputs()` / `load_test_inputs()` return `X` only.
@@ -67,16 +76,16 @@ otherwise it's discarded and the next experiment starts from the best `train.py`
   live, and the last 40 lines of the log are shown to you after each run.
 
 ## Output format for each experiment
-```
+Start your answer with these two plain lines, OUTSIDE any code block:
+
 HYPOTHESIS: <one sentence: what you expect and why>
 DESCRIPTION: <max 8 words, for results.tsv>
-```
-followed by EITHER the complete new `train.py` in one ```python block,
+
+then EITHER the complete new `train.py` in one ```python block (code only, nothing else inside it),
 OR one or more edits to the current best `train.py`:
-```
+
 <<<<<<< SEARCH
 <exact lines from the current train.py>
 =======
 <replacement lines>
 >>>>>>> REPLACE
-```

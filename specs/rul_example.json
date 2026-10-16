@@ -15,7 +15,7 @@
   "primary_metric": "rmse",
   "metrics": ["rmse", "mae", "nasa_score", "early_warning_recall", "early_warning_far", "p95_latency_ms"],
   "kpis": [
-    {"metric": "rmse", "op": "<=", "threshold": 18.0},
+    {"metric": "rmse", "op": "<=", "threshold": 14.0},
     {"metric": "early_warning_far", "op": "<=", "threshold": 0.05}
   ],
   "split_strategy": "by press unit (70/15/15)",

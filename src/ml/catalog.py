@@ -37,8 +37,11 @@ def _raw() -> dict:
 
 def list_catalog() -> tuple[list[StreamInfo], list[LabelSource]]:
     raw = _raw()
-    streams = [StreamInfo(**{k: v for k, v in s.items() if k != "mock_hint"}) for s in raw["streams"]]
-    labels = [LabelSource(**{k: v for k, v in s.items() if k != "source"}) for s in raw["label_sources"]]
+    hidden = {x.strip() for x in settings.catalog_exclude.split(",") if x.strip()}
+    streams = [StreamInfo(**{k: v for k, v in s.items() if k != "mock_hint"}) for s in raw["streams"]
+               if s["id"] not in hidden]
+    labels = [LabelSource(**{k: v for k, v in s.items() if k != "source"}) for s in raw["label_sources"]
+              if s["id"] not in hidden]
     return streams, labels
 
 

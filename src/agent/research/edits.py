@@ -17,13 +17,33 @@ class EditError(ValueError):
 
 
 def _field(text: str, name: str) -> str:
-    m = re.search(rf"^\s*\**{name}\**\s*:\s*(.+)$", text, re.MULTILINE | re.IGNORECASE)
-    return m.group(1).strip() if m else ""
+    """'HYPOTHESIS: x', '**Hypothesis:** x', or a '## Hypothesis' heading followed by the text on the next line."""
+    m = re.search(rf"^\s*[#>*\s]*{name}[*\s]*[:\-][*\s]*(.+)$", text, re.MULTILINE | re.IGNORECASE)
+    if m and m.group(1).strip(" *"):
+        return m.group(1).strip(" *")
+    m = re.search(rf"^\s*#+\s*{name}\s*\n+\s*(\S.*)$", text, re.MULTILINE | re.IGNORECASE)
+    return m.group(1).strip(" *") if m else ""
+
+
+def _short(text: str, words: int = 8) -> str:
+    parts = text.split()
+    return " ".join(parts[:words]) + ("..." if len(parts) > words else "")
+
+
+_HEADER = re.compile(r"^\s*[#>*\s]*(HYPOTHESIS|DESCRIPTION)[*\s]*[:\-]", re.IGNORECASE)
+
+
+def _strip_header(code: str) -> str:
+    """Drop HYPOTHESIS / DESCRIPTION lines a model put inside the code block instead of above it."""
+    lines = code.splitlines()
+    while lines and (not lines[0].strip() or _HEADER.match(lines[0])):
+        lines.pop(0)
+    return "\n".join(lines)
 
 
 def extract_code(text: str) -> str | None:
     blocks = _CODE.findall(text)
-    return max(blocks, key=len).strip() + "\n" if blocks else None
+    return _strip_header(max(blocks, key=len)).strip() + "\n" if blocks else None
 
 
 def parse_proposal(text: str) -> Proposal:
@@ -34,7 +54,18 @@ def parse_proposal(text: str) -> Proposal:
         if code is None:
             raise EditError("No ```python block and no SEARCH/REPLACE blocks found.")
         edits = [{"rewrite": code}]
-    return Proposal(hypothesis=hypothesis or "(none given)", description=description or "(no description)", edits=edits)
+    description = description or (_short(hypothesis) if hypothesis else "(no description)")
+    return Proposal(hypothesis=hypothesis or "(none given)", description=description, edits=edits)
+
+
+def check_train_py(code: str) -> None:
+    """Cheap static checks before spending an experiment on code that can't work."""
+    try:
+        compile(code, "train.py", "exec")
+    except SyntaxError as e:
+        raise EditError(f"train.py does not compile: {e.msg} (line {e.lineno}): {(e.text or '').strip()}") from e
+    if "harness.finish(" not in code:
+        raise EditError("train.py never calls harness.finish(predict_fn): no predictions would be written.")
 
 
 def _norm(s: str) -> str:

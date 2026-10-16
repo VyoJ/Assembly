@@ -47,6 +47,10 @@ def profile_streams(spec: TaskSpec, streams: list[StreamInfo]) -> list[StreamPro
     return out
 
 
+def run_snippet(ws: Workspace, code: str, *, phase: str = "research") -> str:
+    return f"[exit code 0, 0.1s] (mock {phase} snippet, {len(code)} chars)\nX: 14830 rows x 15 cols"
+
+
 def run_prepare(ws: Workspace, prepare_py: str) -> ValidationReport:
     _sleep(2)
     workspace.write_prepare(ws, prepare_py)

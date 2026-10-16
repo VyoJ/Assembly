@@ -22,6 +22,89 @@ Hackathon rules of thumb:
 
 ---
 
+## 0. Current plan (updated 16 Oct)
+
+Three changes from the original plan below:
+- **LLM:** AMD **Token Factory** shared endpoints ([docs/Token-Factory.md](docs/Token-Factory.md)), not self-hosted vLLM.
+- **Compute:** **Daytona** sandboxes ($300 credits), not AMD Developer Cloud instances (credits not guaranteed).
+- **Order:** get one **real end-to-end run with the LLM agent** on the ML that exists today, then build out.
+
+Base branch: `feature/ml-integration` (everything from `init`, `ml-data` and `ml-profiling-validation`).
+
+### Key decisions
+
+1. **The agent, API and scoring run outside Daytona; only agent-written code runs inside it.** Daytona Tier 1–2
+   sandboxes only reach PyPI, GitHub and Hugging Face (full internet needs Tier 3, a $500 top-up), so a sandbox
+   can't call Token Factory. This split also gives real sandboxing for generated code, and hidden labels never
+   leave the host. Only `ml/runner.py` changes: all execution goes through `_run()`.
+2. **Phase 1 runs on a laptop CPU.** C-MAPSS + tree models is small; Daytona adds risk, not capability, at this stage.
+3. **The first real run is sensors only** (C-MAPSS RUL / failure-within-N). It's the only data kind with a working
+   hand-written path and a recipe. Hide the rest with `CATALOG_EXCLUDE`.
+
+### Token Factory facts that shape the code
+
+- Base URL `https://developer.amd.com.cn/radeon/api/v1`, one `rc-…` key **shared by the whole team**.
+- Limits per key: ~20 requests/min, 8 concurrent, and a **$1/day spend cap** (resets 00:00 Asia/Shanghai).
+  Check with `scripts/check_llm.py` or `GET /v1/usage`. Don't run big batches while someone is recording the demo.
+- Structured output: only MiMo accepts `json_schema`, so `LLM_STRUCTURED_METHOD=function_calling`.
+- Default model `DeepSeek-V4-Flash` (no thinking by default, 1M context, tool calling). Fallbacks: `GLM-5.3-Flash`,
+  `Qwen3.8-27B`. Thinking tokens count toward `max_tokens`; empty content means raise `LLM_MAX_TOKENS`.
+- The catalog changes: `check_llm.py` verifies `LLM_MODEL` against `GET /v1/models`.
+- Prompts and outputs are logged for ~2 days. Nothing sensitive.
+- **Open question:** the Evolus track requires our own vLLM on AMD Developer Cloud; Token Factory may rule it out.
+
+### Phase 1: real LLM, full run, local CPU (now)
+
+Setup: `.env` per `.env.example` (`LLM_*`, `ML_MOCK=0`, `BUDGET_PROFILE=demo`), then
+`uv run python scripts/download_data.py --only cmapss`.
+
+Done in code: `agent/llm.py` retries 429/5xx with backoff, caps concurrent calls (`LLM_MAX_CONCURRENCY`, default 3),
+sets `max_tokens`, timeout and optional `reasoning_effort`; `CATALOG_EXCLUDE` hides streams / label sources.
+
+Run in steps, adding one LLM-written piece at a time:
+
+| Step | Command | Proves |
+|---|---|---|
+| a | `uv run python scripts/check_llm.py` | Key, URL, structured output, tool calls |
+| b | `run_research.py --spec specs/rul_example.json --prepare specs/rul_example_prepare.py --n 5` | The LLM writes a `train.py` that runs and beats its own baseline |
+| c | Same without `--prepare` | The LLM writes a `prepare.py` that passes the validators |
+| d | `CATALOG_EXCLUDE=… run_pipeline.py` with a sensor-only goal | formulate → discover → design → research → full train → final test → deploy |
+| e | Same through the API with approval (`--no-auto-approve` + approve endpoint) | Approval pause + SSE events |
+
+Expect to iterate `program.md` and the prompts at b and c; that's the real work of this phase. If deploy breaks
+because the simulator sends synthetic values a real model can't use, demo with the predictor's `{"replay": i}` mode.
+Keep `runs/{run}/events.jsonl` from the first good run as the first fallback demo.
+
+### Phase 2: experiments on Daytona
+
+1. `ml/executor.py`, `EXECUTOR=local|daytona`. Under Daytona, per task: create one sandbox from a prebuilt snapshot
+   at freeze; upload `data/` (inputs only) + `harness.py`. Per experiment: upload `train.py`, run it as an async
+   session command with the time limit, stream logs to progress events, download predictions / timings / `model/`,
+   score locally. `prepare.py` stays local (cheap, and the only step that needs labels).
+2. Snapshot: `uv sync --group ml` + C-MAPSS / CWRU data + weights baked in (the C-MAPSS S3 download isn't reachable
+   from Tier 1–2 sandboxes).
+3. CPU sandboxes first (default max 4 vCPU / 8 GiB / 10 GiB disk per sandbox; enough for sensors). Ephemeral or
+   `auto_delete_interval=0`; raise `auto_stop_interval` above the 15-minute default during research.
+4. GPU for vision: Daytona has **AMD Instinct MI355X** (fits the AMD story; needs a ROCm image, untested) and NVIDIA
+   (H100 / RTX Pro 6000; CUDA image, lower risk). `gpu_type` takes an ordered preference list.
+5. Check first: Daytona says free credits can't pay for GPU sandboxes; confirm what the $300 is, and GPU prices on
+   the billing dashboard. On-demand GPUs queue for capacity; spot GPUs need Tier 2 and can be preempted.
+
+### Phase 3: build out
+
+1. Vision (ML team): `specs/metal_nut_example.json` + `_prepare.py`, image anomaly recipe, cached weights; then two
+   tasks in parallel.
+2. More recipes and `program.md` tuning, driven by what the real LLM gets wrong.
+3. Frontend (not started): plan review, research feed, score chart, live dashboard.
+4. Simulator replays real C-MAPSS / MVTec test data.
+5. Record a strong `BUDGET_PROFILE=demo` run; rehearse.
+
+**Cut:** SAM 3 + pseudo-labels, PatchTST, `Dockerfile.runtime`, self-hosted vLLM, stretch goals.
+
+> Sections 1–9 below are the original plan. Where they mention vLLM or AMD Developer Cloud instances, section 0 wins.
+
+---
+
 ## 1. Setup (do this together, ~1 hour)
 
 ```bash

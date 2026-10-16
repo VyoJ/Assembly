@@ -10,8 +10,9 @@ borrow what helps. They use only the `harness.py` API described in `program.md`.
   cap), and how to shift a scalar prediction for early-warning KPIs.
 
 ## Ideas worth trying (no recipe yet)
-- Per-unit rolling-window features (mean / std / slope over the last N cycles) if `prepare.py` gave
-  one row per cycle without history.
+- History features (per-unit rolling mean / std / slope over the last N cycles) belong in `prepare.py`
+  (design phase), never in `train.py`: the deployed model sees one row of `X` at a time. In `train.py`,
+  check which ones `prepare.py` already built (read it with `read_workspace_file`).
 - Piecewise-linear RUL target (cap at ~125 cycles) and an asymmetric loss that penalises late predictions.
 - LightGBM as a faster alternative; small Optuna sweep sized with `harness.time_left()`.
 - LSTM / 1D-CNN over fixed windows when trees plateau (torch; must output the final prediction).

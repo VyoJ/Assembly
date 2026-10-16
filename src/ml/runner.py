@@ -27,7 +27,7 @@ from pathlib import Path
 
 from core.config import settings
 from core.contracts import ExperimentResult, FinalReport, ValidationReport, Workspace
-from ml import scoring, validators, workspace
+from ml import data_overview, scoring, validators, workspace
 
 PREPARE_TIMEOUT_S = 900
 KILL_FACTOR = 2.0  # hard kill at KILL_FACTOR x budget (+ grace for loading data and writing predictions)
@@ -198,8 +198,36 @@ def run_prepare(ws: Workspace, prepare_py: str) -> ValidationReport:
     report.checks = {"prepare_runs": True, **report.checks}
     report.log_tail = report.log_tail or tail
     if report.ok:
+        report.data_card = f"{report.data_card.rstrip()}\n\n{data_overview.overview(wsp)}".rstrip()
         workspace.write_data_card(ws, report.data_card)
     return report
+
+
+SNIPPET_TIMEOUT_S = 60
+SNIPPET_MAX_CHARS = 4000
+
+
+def run_snippet(ws: Workspace, code: str, *, phase: str = "research") -> str:
+    """Run a short exploration script and return its (capped) output. Same sandbox rules as train.py: never the
+    hidden labels dir. phase="design" also passes ASSEMBLY_DATA_DIR so harness.read_stream / read_labels work
+    before prepare.py exists; it still can't write a dataset (no labels dir)."""
+    wsp = Path(ws.path)
+    scratch = wsp / "_scratch"
+    scratch.mkdir(exist_ok=True)
+    n = len(list(scratch.glob("snippet_*.py")))
+    path = scratch / f"snippet_{n:03d}.py"
+    path.write_text(code)
+    env = _env(ws, None, SNIPPET_TIMEOUT_S, prepare=False)
+    if phase == "design":
+        env["ASSEMBLY_DATA_DIR"] = str(settings.data_dir.resolve())
+    log = scratch / f"snippet_{n:03d}.log"
+    rc, _, secs = _run([sys.executable, str(path)], wsp, env, SNIPPET_TIMEOUT_S, log)
+    out = log.read_text(errors="replace")
+    if len(out) > SNIPPET_MAX_CHARS:
+        half = SNIPPET_MAX_CHARS // 2
+        out = f"{out[:half]}\n...({len(out) - SNIPPET_MAX_CHARS} chars cut)...\n{out[-half:]}"
+    status = "timed out" if rc is None else f"exit code {rc}"
+    return f"[{status}, {secs:.1f}s]\n{out or '(no output; print what you want to see)'}"
 
 
 def run_experiment(ws: Workspace, train_py: str, meta: dict, progress=None) -> ExperimentResult:

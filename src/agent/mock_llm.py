@@ -84,6 +84,11 @@ _IDEAS = [
 ]
 
 
+def explore() -> str:
+    return ("- X: one row per unit and cycle, raw sensor columns + `time`; no group column (groups via harness.groups).\n"
+            "- y: remaining cycles, capped at 125.\n- Several sensors are near-constant. (mock notes)")
+
+
 def propose(best_code: str | None, exp_id: str) -> str:
     if not best_code:
         return ("HYPOTHESIS: A simple gradient-boosted baseline on window features gives a valid first score.\n"

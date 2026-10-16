@@ -35,4 +35,5 @@ def stop_reason(state: ResearchState) -> str | None:
 
 def needs_fix(state: ResearchState) -> bool:
     last = state.get("last")
-    return last is not None and last.status in FAILED and state.get("fix_attempts", 0) < settings.max_fix_attempts
+    return (last is not None and last.status in FAILED and state.get("fix_attempts", 0) < settings.max_fix_attempts
+            and state.get("n_exp", 0) < settings.max_experiments)

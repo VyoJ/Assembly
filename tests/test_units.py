@@ -1,6 +1,6 @@
 import pytest
 
-from agent.research.edits import EditError, apply_edits, parse_proposal
+from agent.research.edits import EditError, apply_edits, check_train_py, parse_proposal
 from core.contracts import KPI, TaskSpec
 from ml import scoring
 
@@ -24,6 +24,29 @@ def test_search_whitespace_tolerant_and_missing():
         apply_edits(BASE, [{"old": "NOT THERE", "new": "x"}])
     with pytest.raises(EditError):
         parse_proposal("no code here")
+
+
+def test_header_inside_code_block_is_stripped():
+    reply = "```python\nHYPOTHESIS: rolling features help\nDESCRIPTION: rolling mean\n\nimport harness\nprint(1)\n```"
+    p = parse_proposal(reply)
+    assert p.description == "rolling mean"
+    assert apply_edits(None, p.edits) == "import harness\nprint(1)\n"
+
+
+def test_description_variants_and_fallback():
+    code = "\n```python\nprint(1)\n```"
+    assert parse_proposal("**Hypothesis:** lags help\n**Description:** add lags" + code).description == "add lags"
+    assert parse_proposal("## Description\nadd lags\n" + code).description == "add lags"
+    p = parse_proposal("HYPOTHESIS: a shallower tree generalises better across engine units here" + code)
+    assert p.description == "a shallower tree generalises better across engine units..."
+
+
+def test_check_train_py():
+    check_train_py("import harness\nharness.finish(lambda X: X)\n")
+    with pytest.raises(EditError, match="does not compile"):
+        check_train_py("HYPOTHESIS: rolling features help\nharness.finish(f)\n")
+    with pytest.raises(EditError, match="harness.finish"):
+        check_train_py("import harness\nprint(1)\n")
 
 
 def _spec(**kw) -> TaskSpec:
