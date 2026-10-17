@@ -1,7 +1,8 @@
 """Simulated plant: yields live samples for deployed models.
 
 Currently synthetic (a press that degrades, fails, and gets repaired; random camera parts).
-TODO: replay real C-MAPSS test units and MVTec test images via ml.catalog when data is available.
+Camera streams of deployed image tasks replay their held-out test images instead (api/deployments.py).
+TODO: replay real C-MAPSS test units.
 """
 
 import asyncio

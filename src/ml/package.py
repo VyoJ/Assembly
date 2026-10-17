@@ -61,6 +61,7 @@ def package(ws: Workspace) -> str:
     preds = scoring.find_file(src / "test_predictions")
     if preds is not None:
         shutil.copy(preds, pkg / f"replay_predictions{preds.suffix}")
+    _write_replay_labels(ws, pkg)
 
     timings = _read_json(src / "timings.json")
     manifest = {
@@ -91,6 +92,23 @@ def package(ws: Workspace) -> str:
     manifest["runtime_provider"] = pred.provider
     (pkg / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
     return str(pkg)
+
+
+def _write_replay_labels(ws: Workspace, pkg: Path) -> None:
+    """True test labels of the replay rows, so the live dashboard can show hit / miss / false alarm.
+    Written after the final test (the agent never reads packages), only for one-value-per-sample labels."""
+    import pandas as pd
+
+    from ml import workspace
+
+    labels = workspace.labels_dir(ws.run_id, ws.task_id) / "test_labels.parquet"
+    replay = pkg / "replay_inputs.parquet"
+    if not (labels.exists() and replay.exists()):
+        return
+    sids = pd.read_parquet(replay, columns=["sample_id"])["sample_id"]
+    y = pd.read_parquet(labels).set_index("sample_id")["y"]
+    y = y[y.index.isin(set(sids))]
+    (pkg / "replay_labels.json").write_text(json.dumps({str(k): v for k, v in y.items()}, default=float))
 
 
 NORMAL_NAMES = {"normal", "good", "ok", "healthy", "no_fault", "nominal"}
@@ -136,6 +154,20 @@ class Predictor:
         rp = self.path / "replay_inputs.parquet"
         self._replay = pd.read_parquet(rp) if rp.exists() else None
         self._stored = self._load_stored()
+        self._truth = _read_json(self.path / "replay_labels.json")
+
+    def replay_paths(self) -> dict:
+        """sample_id -> absolute file path of the replay inputs (file tasks only)."""
+        if self._replay is None or "path" not in self._replay:
+            return {}
+        return dict(zip(self._replay["sample_id"], self._replay["path"], strict=True))
+
+    def truth(self, sample_id: str):
+        """True label of a replay sample (class name for class_probs), or None if unknown."""
+        y = self._truth.get(sample_id)
+        if y is not None and self.fmt == "class_probs" and self.classes:
+            return self.classes[int(y)]
+        return y
 
     def _load_stored(self) -> dict:
         p = scoring.find_file(self.path / "replay_predictions")

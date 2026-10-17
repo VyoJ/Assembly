@@ -226,6 +226,9 @@ def write_dataset(train, val, test, *, groups=None, meta: dict | None = None) ->
     if not info["groups"]:
         del info["groups"]
     info = {**info, **(meta or {})}
+    if "groups" in info and not info.get("split"):
+        info["split"] = "group"  # groups given but no strategy: they only make sense as a group split
+        print("write_dataset: meta['split'] not set; using 'group' because groups were given")
     # Provenance the validators need and prepare.py can't override: frames cut from a video are near-duplicates
     # of their neighbours, so they can't be split at random.
     info["from_video"] = any(_from_video(X) for X, _ in splits.values())
@@ -332,7 +335,7 @@ def device() -> str:
 
 
 def weights(name: str) -> str:
-    """Local path to pre-downloaded weights (e.g. 'yolo11n.pt', 'sam3'). Experiments have no network."""
+    """Local path to pre-downloaded weights (e.g. 'resnet18.pth', 'yolo11n.pt'). Experiments have no network."""
     path = Path(os.environ.get("ASSEMBLY_WEIGHTS_DIR", "data/weights")) / name
     if not path.exists():
         raise FileNotFoundError(f"weights '{name}' not found in {path.parent}; see data_card.md for what's available")

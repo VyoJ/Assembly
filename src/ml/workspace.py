@@ -114,7 +114,12 @@ def write_prepare(ws: Workspace, code: str) -> None:
 
 def write_data_card(ws: Workspace, card: str) -> None:
     pkgs = "\n".join(f"- {k}=={v}" for k, v in installed_packages().items()) or "- (ML group not installed)"
-    (ws_dir(ws) / "data_card.md").write_text(f"{card.rstrip()}\n\n## Installed packages\n{pkgs}\n")
+    wdir = settings.data_dir / "weights"
+    names = sorted(p.name for p in wdir.iterdir() if not p.name.startswith(".")) if wdir.is_dir() else []
+    weights = "\n".join(f"- `{n}`" for n in names) or "- (none downloaded)"
+    (ws_dir(ws) / "data_card.md").write_text(
+        f"{card.rstrip()}\n\n## Installed packages\n{pkgs}\n\n"
+        f"## Pretrained weights (load with harness.weights(name))\n{weights}\n")
 
 
 def best_train_py(ws: Workspace) -> str | None:

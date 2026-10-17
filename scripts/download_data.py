@@ -4,7 +4,7 @@ Layout this produces:
     data/cmapss/{train,test,RUL}_FD001.txt
     data/cwru/<record>.mat                                (files listed in plant/catalog.yaml)
     data/mvtec/metal_nut/{train,test,ground_truth}/...   (manual, see below)
-    data/weights/{yolo11n.pt, yolo11s.pt, ...}
+    data/weights/{resnet18.pth, yolo11n.pt, yolo11s.pt}
 
     uv run python scripts/download_data.py                 # everything
     uv run python scripts/download_data.py --only cmapss
@@ -26,6 +26,8 @@ CMAPSS_URL = "https://phm-datasets.s3.amazonaws.com/NASA/6.+Turbofan+Engine+Degr
 CMAPSS_FILES = ["train_FD001.txt", "test_FD001.txt", "RUL_FD001.txt"]
 CWRU_URL = "https://engineering.case.edu/sites/default/files/{file}"
 YOLO_WEIGHTS = ["yolo11n.pt", "yolo11s.pt"]
+# torchvision ImageNet backbones, saved as plain state dicts (ml.models.vision.load_backbone)
+BACKBONES = {"resnet18.pth": "https://download.pytorch.org/models/resnet18-f37072fd.pth"}
 
 
 def _extract_nested(zip_bytes: bytes, out: Path) -> None:
@@ -102,6 +104,19 @@ def mvtec(tar_path: str | None = None) -> None:
     print(f"ok    MVTec metal_nut ({n} png) -> {dest}")
 
 
+def backbone_weights() -> None:
+    dest = settings.data_dir / "weights"
+    dest.mkdir(parents=True, exist_ok=True)
+    for name, url in BACKBONES.items():
+        if (dest / name).exists():
+            print(f"ok    {name}")
+            continue
+        with urllib.request.urlopen(url, timeout=120) as r, open(dest / f"{name}.part", "wb") as f:
+            shutil.copyfileobj(r, f)
+        (dest / f"{name}.part").rename(dest / name)
+        print(f"ok    {name} -> {dest}")
+
+
 def yolo_weights() -> None:
     dest = settings.data_dir / "weights"
     dest.mkdir(parents=True, exist_ok=True)
@@ -119,7 +134,7 @@ def yolo_weights() -> None:
         print(f"ok    {name} -> {dest}")
 
 
-STEPS = {"cmapss": cmapss, "cwru": cwru, "mvtec": mvtec, "yolo": yolo_weights}
+STEPS = {"cmapss": cmapss, "cwru": cwru, "mvtec": mvtec, "weights": backbone_weights, "yolo": yolo_weights}
 
 
 def main() -> None:

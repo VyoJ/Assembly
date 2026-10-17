@@ -1,0 +1,18 @@
+{
+  "id": "nut_defect",
+  "name": "Metal nut visual defect detection",
+  "rationale": "Catching bent, scratched, flipped or discoloured nuts at the press exit stops bad parts from reaching assembly.",
+  "framing": "Binary detection: is the part in a top-camera image defective (any defect type) or good.",
+  "input_streams": ["line3.cam_top"],
+  "label_sources": ["qc_inspections"],
+  "target_definition": "1 if the QC inspection found any defect on the imaged part, else 0",
+  "prediction_format": "binary_score",
+  "primary_metric": "auroc",
+  "metrics": ["auroc", "pr_auc", "recall", "precision", "false_alarm_rate", "p95_latency_ms"],
+  "kpis": [
+    {"metric": "recall", "op": ">=", "threshold": 0.9},
+    {"metric": "false_alarm_rate", "op": "<=", "threshold": 0.1}
+  ],
+  "split_strategy": "random 60/20/20, stratified by defect type (one image per physical part, so images are independent)",
+  "time_budget_s": 180
+}

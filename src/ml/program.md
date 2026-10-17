@@ -66,6 +66,18 @@ otherwise it's discarded and the next experiment starts from the best `train.py`
   - `boxes`: for each image, a list of `[x1, y1, x2, y2, score, class]` (an empty list if none)
 - `scalar` early-warning metrics alarm when the predicted value is `<= early_warning_horizon`
   (see `data/meta.json`).
+- `class_probs` deployments alarm when the predicted class isn't `meta.json["normal_class"]` (e.g. "normal").
+
+## Images (camera / visual inspection)
+- Start from the `image_anomaly` recipe: `ml.models.vision.PatchKNNAnomaly` (learns what normal parts look like;
+  needs no defect examples; threshold from held-out normal images) for `binary_score`, and
+  `ml.models.vision.ImageEmbeddingClassifier` for `class_probs`. Both use a pretrained ResNet-18 from
+  `harness.weights("resnet18.pth")` (listed in `data_card.md`) and run on CPU.
+- These models take `X` as harness gives it (DataFrame with `path`) and the deployed form (a batch of decoded
+  images), with resizing and normalisation inside, so `harness.save_model(model)` is enough. If you write your
+  own image model, keep that property.
+- Internal splits: images of separate parts are independent (stratified random is fine); frames from the same
+  video clip are near-duplicates, so split by `harness.groups("train")`.
 - `ml.models.selfcheck.selfcheck(format, y_true, y_pred, metric_names)` computes the exact scorer metrics
   on your internal split.
 

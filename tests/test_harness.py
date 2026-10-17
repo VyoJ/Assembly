@@ -120,3 +120,13 @@ def test_streams_outside_the_task_are_blocked(tmp_path, monkeypatch):
     _, _, harness = _workspace(tmp_path, monkeypatch, _spec("rul_example.json"))
     with pytest.raises(KeyError):
         harness.read_stream("hvac.ambient_temp")
+
+
+def test_groups_without_split_default_to_a_group_split(tmp_path, monkeypatch):
+    ws, _, harness = _workspace(tmp_path, monkeypatch, {"prediction_format": "scalar"})
+    part = lambda n, g: ((pd.DataFrame({"a": np.arange(n, dtype=float)}), list(range(n))), [g] * n)
+    (tr, gtr), (va, gva), (te, gte) = part(6, "u1"), part(3, "u2"), part(3, "u3")
+    harness.write_dataset(tr, va, te, groups={"train": gtr, "val": gva, "test": gte})
+    assert json.loads((ws / "data" / "meta.json").read_text())["split"] == "group"
+    harness.write_dataset(tr, va, te, groups={"train": gtr, "val": gva, "test": gte}, meta={"split": "temporal"})
+    assert json.loads((ws / "data" / "meta.json").read_text())["split"] == "temporal"  # explicit choice wins

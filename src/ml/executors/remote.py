@@ -123,11 +123,8 @@ class RemoteExecutor:
             return box
 
     def _sync(self, box, ws: Workspace) -> None:
-        meta = Path(ws.path) / "data" / "meta.json"
-        if meta.exists() and '"files"' in meta.read_text():
-            # file inputs are stored as absolute LOCAL paths in the parquet; remote runs would not find them
-            raise NotImplementedError(f"[{self.name}] file inputs (images / recordings) are not supported remotely "
-                                      "yet; use EXECUTOR=local for this task")
+        # File inputs (images, recordings) work too: write_dataset copies them into data/files/<split>/ with
+        # RELATIVE paths, and harness resolves them against the box's own data dir.
         if self._code_tar is None:
             self._code_tar = _tar([(SRC / "core", "core"), (SRC / "ml", "ml")])
         self._put_tar(box, self._code_tar, f"{self.remote_root}/src", "code sync")
