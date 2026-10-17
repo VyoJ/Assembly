@@ -101,14 +101,18 @@ def _write_replay_labels(ws: Workspace, pkg: Path) -> None:
 
     from ml import workspace
 
-    labels = workspace.labels_dir(ws.run_id, ws.task_id) / "test_labels.parquet"
+    hidden = workspace.labels_dir(ws.run_id, ws.task_id)
     replay = pkg / "replay_inputs.parquet"
-    if not (labels.exists() and replay.exists()):
+    if not replay.exists():
         return
-    sids = pd.read_parquet(replay, columns=["sample_id"])["sample_id"]
-    y = pd.read_parquet(labels).set_index("sample_id")["y"]
-    y = y[y.index.isin(set(sids))]
-    (pkg / "replay_labels.json").write_text(json.dumps({str(k): v for k, v in y.items()}, default=float))
+    sids = set(pd.read_parquet(replay, columns=["sample_id"])["sample_id"])
+    if (hidden / "test_labels.parquet").exists():
+        y = pd.read_parquet(hidden / "test_labels.parquet").set_index("sample_id")["y"].to_dict()
+    elif (hidden / "test_labels.json").exists():  # boxes: {sample_id: [[x1, y1, x2, y2, class], ...]}
+        y = json.loads((hidden / "test_labels.json").read_text())
+    else:
+        return
+    (pkg / "replay_labels.json").write_text(json.dumps({str(k): v for k, v in y.items() if k in sids}, default=float))
 
 
 NORMAL_NAMES = {"normal", "good", "ok", "healthy", "no_fault", "nominal"}
@@ -262,7 +266,8 @@ class Predictor:
         if not path:
             return {**self._shape([] if self.fmt == "boxes" else 0.0), "error": "sample has no image_path"}
         if self.model.kind == "ultralytics":
-            r = self.model.predict(path)[0]
+            # keep every box the calibrated threshold could alarm on (YOLO's default cut-off is 0.25)
+            r = self.model.obj.predict(path, conf=min(0.25, self.threshold), verbose=False)[0]
             if self.fmt == "boxes":
                 b = r.boxes
                 rows = zip(b.xyxy.tolist(), b.conf.tolist(), b.cls.tolist(), strict=True)

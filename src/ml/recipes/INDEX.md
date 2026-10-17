@@ -9,6 +9,9 @@ borrow what helps. They use only the `harness.py` API described in `program.md`.
 - `image_anomaly.py`: camera / visual inspection on CPU with a pretrained ResNet-18. `binary_score`:
   PatchCore-style anomaly score from a memory bank of normal patches (no defect examples needed);
   `class_probs`: embeddings + logistic regression. **Start here for image tasks.**
+- `yolo_boxes.py`: `boxes` tasks (where is the defect) by fine-tuning YOLO11-nano from
+  `harness.weights("yolo11n.pt")`; wall-clock training budget, offline, alarm threshold calibrated on an
+  internal split. **Start here for box tasks.**
 - `threshold_calibration.py`: choose the alarm threshold from the KPIs (max recall under a false-alarm
   cap), and how to shift a scalar prediction for early-warning KPIs.
 
@@ -37,4 +40,4 @@ borrow what helps. They use only the `harness.py` API described in `program.md`.
   faults are weak in the plain spectrum. Normalise per window so other motor loads still match.
 - LSTM / 1D-CNN over fixed windows when trees plateau (torch; must output the final prediction).
 - Vision: larger `image_size` (320+) or tiling for small defects; ensemble PatchKNN with the embedding
-  classifier; Ultralytics YOLO only for `boxes` tasks and only if `yolo11n.pt` is listed in `data_card.md`.
+  classifier; for `boxes`, a larger `imgsz` or `yolo11s.pt` (if listed in `data_card.md`) with more time.

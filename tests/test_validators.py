@@ -478,7 +478,7 @@ def test_metadata_contradictions_are_reported(dataset, field, value):
     assert not _report(dataset).checks["format"]
 
 
-@pytest.mark.parametrize("fmt", ["class_probs", "boxes", "masks"])
+@pytest.mark.parametrize("fmt", ["class_probs", "masks"])  # boxes: validated, see test_yolo.py
 def test_unsupported_prediction_formats_fail_explicitly(dataset, fmt):
     dataset["ws"] = dataset["ws"].model_copy(
         update={
@@ -1052,7 +1052,7 @@ def test_dataset_artifact_symlinks_are_rejected(separate_dataset, tmp_path, arti
     assert "PRIVATE" not in report.model_dump_json()
 
 
-@pytest.mark.parametrize("fmt", ["boxes", "masks"])
+@pytest.mark.parametrize("fmt", ["masks"])  # boxes: validated, see test_yolo.py
 def test_real_structured_labels_are_explicitly_unverified(separate_dataset, fmt):
     ws, data, hidden, meta = separate_dataset
     ws = ws.model_copy(update={"spec": ws.spec.model_copy(update={"prediction_format": fmt})})

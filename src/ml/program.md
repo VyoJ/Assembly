@@ -73,6 +73,8 @@ otherwise it's discarded and the next experiment starts from the best `train.py`
   needs no defect examples; threshold from held-out normal images) for `binary_score`, and
   `ml.models.vision.ImageEmbeddingClassifier` for `class_probs`. Both use a pretrained ResNet-18 from
   `harness.weights("resnet18.pth")` (listed in `data_card.md`) and run on CPU.
+- `boxes` tasks (where is the defect): start from the `yolo_boxes` recipe (YOLO11-nano fine-tune). Labels are
+  `[x1, y1, x2, y2, class]` in pixels per image; Ultralytics must stay offline (`YOLO_OFFLINE=1`, `plots=False`).
 - These models take `X` as harness gives it (DataFrame with `path`) and the deployed form (a batch of decoded
   images), with resizing and normalisation inside, so `harness.save_model(model)` is enough. If you write your
   own image model, keep that property.

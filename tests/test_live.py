@@ -7,11 +7,12 @@ import pytest
 
 pytest.importorskip("sklearn")
 
-from core import registry  # noqa: E402
-from core.config import settings  # noqa: E402
-from core.contracts import KPI, Deployment, TaskSpec  # noqa: E402
-from ml import package, runner, workspace  # noqa: E402
-from test_runner import REAL_PREPARE, REAL_TRAIN  # noqa: E402
+from test_runner import REAL_PREPARE, REAL_TRAIN
+
+from core import registry
+from core.config import settings
+from core.contracts import KPI, Deployment, TaskSpec
+from ml import package, runner, workspace
 
 
 async def test_live_sensor_feed_replays_held_out_rows(tmp_path, monkeypatch):

@@ -48,6 +48,8 @@ def _truth_alarm(predictor, truth) -> bool | None:
         return bool(truth)
     if predictor.fmt == "scalar":
         return float(truth) <= predictor.horizon
+    if predictor.fmt == "boxes":
+        return len(truth) > 0  # a defective part has at least one true box
     if predictor.fmt == "class_probs" and predictor.normal_class is not None:
         return truth != predictor.normal_class
     return None

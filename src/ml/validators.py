@@ -496,6 +496,8 @@ def validate(ws: Workspace) -> ValidationReport:
     required checks that cannot be verified are False. Expected file/data errors
     become diagnostics; unexpected programming errors propagate.
     """
+    if ws.spec.prediction_format == "boxes":
+        return _validate_boxes(ws)
     checks = dict.fromkeys(CHECKS, False)
     messages, inputs, meta, arrays = [], {}, {}, {}
     data_dir = workspace.ws_dir(ws) / "data"
@@ -735,3 +737,105 @@ def _file_errors(frame: pd.DataFrame, split: str, data_dir: Path) -> list[str]:
         except (OSError, ValueError, ImportError, Image.DecompressionBombError) as exc:
             errors.append(f"{split}: image missing/unreadable ({type(exc).__name__}).")
     return list(dict.fromkeys(errors))
+
+
+# ---------------------------------------------------------------- boxes (object detection on image files)
+
+
+def _box_errors(boxes, name: str, n_classes: int | None) -> list[str]:
+    """One image's boxes: a list of [x1, y1, x2, y2, class] with finite pixel coords and a valid class index."""
+    if not isinstance(boxes, list):
+        return [f"{name}: boxes must be a list per image ([] when the image has no defect)."]
+    for b in boxes:
+        if (not isinstance(b, list) or len(b) != 5
+                or any(isinstance(v, bool) or not isinstance(v, (int, float)) or not np.isfinite(v) for v in b)):
+            return [f"{name}: each box must be [x1, y1, x2, y2, class] with finite numbers."]
+        if b[0] < 0 or b[1] < 0 or b[2] <= b[0] or b[3] <= b[1]:
+            return [f"{name}: boxes need x2 > x1 >= 0 and y2 > y1 >= 0 (pixels)."]
+        if b[4] != int(b[4]) or b[4] < 0 or (n_classes is not None and b[4] >= n_classes):
+            return [f"{name}: box class must be an index into meta.json classes."]
+    return []
+
+
+def _validate_boxes(ws: Workspace) -> ValidationReport:
+    """Image files + {sample_id: [[x1, y1, x2, y2, class], ...]} labels (harness.write_dataset with boxes)."""
+    checks = dict.fromkeys(CHECKS, True)
+    messages: list[str] = []
+    data_dir = workspace.ws_dir(ws) / "data"
+    labels_dir = workspace.labels_dir(ws.run_id, ws.task_id)
+    inputs, labels, meta = {}, {}, {}
+    try:
+        meta = json.loads(_artifact_path(data_dir / "meta.json", data_dir).read_text())
+        for split in ("train", "val", "test"):
+            frame = pd.read_parquet(_artifact_path(data_dir / f"{split}_inputs.parquet", data_dir))
+            inputs[split] = frame.rename(columns={"sample_id": "id"})
+            root = data_dir if split == "train" else labels_dir
+            labels[split] = json.loads(_artifact_path(root / f"{split}_labels.json", root).read_text())
+    except (OSError, ValueError) as exc:
+        checks = dict.fromkeys(CHECKS, False)
+        messages.append(f"FAIL files_present: inputs, box labels or meta.json missing/unreadable ({type(exc).__name__}).")
+        return ValidationReport(ok=False, checks=checks, messages=messages, data_card="")
+
+    def fail(check, error):
+        checks[check] = False
+        messages.append(f"FAIL {check}: {error}")
+
+    if not isinstance(meta, dict) or meta.get("prediction_format") != "boxes":
+        fail("format", "meta.json: prediction_format must be 'boxes'.")
+        meta = meta if isinstance(meta, dict) else {}
+    if any((data_dir / f"{s}_labels.json").exists() for s in ("val", "test")):
+        fail("no_label_leak", "Validation/test labels must not be persisted in the public data directory.")
+    classes = meta.get("classes")
+    n_classes = len(classes) if isinstance(classes, list) and classes else None
+    for split, frame in inputs.items():
+        for error in _file_errors(frame, split, data_dir):
+            fail("format", error)
+        extra = set(frame.columns) - {"id", "path"}
+        for column in extra:
+            name = str(column).rsplit(".", 1)[-1].lower()
+            if name in TARGET_NAMES or name.startswith(("target_", "label_", "y_", "box")):
+                fail("no_label_leak", f"{split}: forbidden target/target-derived input column '{column}'.")
+        if not isinstance(labels[split], dict) or set(labels[split]) != set(frame["id"]):
+            fail("format", f"{split}: box labels must have exactly one entry per input sample_id.")
+            continue
+        for error in dict.fromkeys(e for b in labels[split].values() for e in _box_errors(b, split, n_classes)):
+            fail("format", error)
+        n_defective = sum(1 for b in labels[split].values() if isinstance(b, list) and b)
+        if n_defective == 0:
+            fail("label_sanity", f"{split}: no image has a box; the detector cannot learn or be scored.")
+        if len(frame) < (10 if split == "train" else 5):
+            fail("min_sizes", f"{split} has only {len(frame)} images.")
+    if checks["format"]:
+        groups = meta.get("groups") if isinstance(meta.get("groups"), dict) else {}
+        for split, frame in inputs.items():
+            if groups.get(split) is not None:
+                frame["group"] = groups[split]
+        group_errors, time_errors, notes = _split_errors(inputs, meta, [])
+        group_errors = [*group_errors, *_duplicate_file_errors(inputs, data_dir)]
+        for error in group_errors:
+            fail("group_disjoint", error)
+        for error in time_errors:
+            fail("time_ordered", error)
+        messages.extend(notes)
+    messages.append("VERIFIED: neutral image paths; box geometry and class indices; labels hidden for val/test.")
+
+    sizes = {s: len(f) for s, f in inputs.items()}
+    with_boxes = {s: sum(1 for b in labels[s].values() if isinstance(b, list) and b) for s in labels}
+    n_boxes = {s: sum(len(b) for b in labels[s].values() if isinstance(b, list)) for s in labels}
+    card = "\n".join([
+        f"# Dataset: {ws.spec.name}",
+        f"- Task: {ws.task_id}",
+        "- Prediction format: boxes ([x1, y1, x2, y2, class] in pixels per image)",
+        f"- Classes: {classes}",
+        f"- Split: {meta.get('split', 'unspecified')}",
+        f"- Images per split: {sizes}",
+        f"- Images with at least one box: {with_boxes}; boxes: {n_boxes}",
+        "- Inputs: image files (`path`); train labels via harness.load_train() as lists of boxes.",
+        "",
+        "## Validation",
+        "",
+        *[f"- {c}: {'passed' if ok else 'failed'}" for c, ok in checks.items()],
+        "",
+        *[f"- {m}" for m in messages],
+    ])
+    return ValidationReport(ok=all(checks.values()), checks=checks, messages=messages, data_card=card + "\n")
