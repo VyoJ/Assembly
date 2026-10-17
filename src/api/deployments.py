@@ -31,21 +31,46 @@ async def predict(dep_id: str, sample: dict, task_id: str | None = None) -> dict
     return {tid: live.predictors[tid].predict(sample) for tid in targets if tid in live.predictors}
 
 
+def _replays(predictor) -> bool:
+    """A real package with held-out test rows: the live feed replays them (a mock predictor has none)."""
+    return getattr(predictor, "n_replay", 0) > 0
+
+
 def _is_camera(predictor) -> bool:
-    """Image tasks with a real package: the live feed replays its held-out test images (a mock has none)."""
-    return getattr(predictor, "input_kind", None) == "files" and getattr(predictor, "n_replay", 0) > 0
+    return _replays(predictor) and getattr(predictor, "input_kind", None) == "files"
 
 
-def _camera_frame(dep_id: str, tid: str, predictor, tick: int) -> dict:
-    """Next held-out test image (never seen in training) through the deployed model, for real."""
-    frame = predictor.replay(tick)
-    out = predictor.predict({"image_path": frame["path"]})
-    sid = frame["sample_id"]
+def _truth_alarm(predictor, truth) -> bool | None:
+    """Should this sample have raised an alarm? Same rule the predictor uses on its own output."""
+    if truth is None:
+        return None
+    if predictor.fmt == "binary_score":
+        return bool(truth)
+    if predictor.fmt == "scalar":
+        return float(truth) <= predictor.horizon
+    if predictor.fmt == "class_probs" and predictor.normal_class is not None:
+        return truth != predictor.normal_class
+    return None
+
+
+def _replay_tick(dep_id: str, tid: str, predictor, tick: int) -> dict:
+    """Next held-out test sample (never seen in training) through the deployed model, for real: an image file,
+    or a feature row. Array inputs fall back to the winner's stored prediction for that sample."""
+    row = predictor.replay(tick)
+    sid = row.pop("sample_id")
+    if predictor.input_kind == "files":
+        out = predictor.predict({"image_path": row["path"]})
+        out["frame_url"] = f"/api/deployments/{dep_id}/frames/{tid}/{sid}"
+    elif predictor.input_kind == "table":
+        out = predictor.predict(row)
+    else:
+        out = predictor.predict({"replay": tick})
     truth = predictor.truth(sid)
-    out.update(sample_id=sid, frame_url=f"/api/deployments/{dep_id}/frames/{tid}/{sid}", truth=truth)
-    if truth is not None and predictor.fmt == "binary_score":
+    out.update(sample_id=sid, truth=truth)
+    should = _truth_alarm(predictor, truth)
+    if should is not None and "alarm" in out:
         out["outcome"] = {(True, True): "caught", (False, True): "missed",
-                          (True, False): "false_alarm", (False, False): "ok"}[(out["alarm"], bool(truth))]
+                          (True, False): "false_alarm", (False, False): "ok"}[(bool(out["alarm"]), should)]
     return out
 
 
@@ -63,7 +88,8 @@ async def frame(dep_id: str, task_id: str, sample_id: str) -> FileResponse:
 
 @router.get("/{dep_id}/live")
 async def live_predictions(dep_id: str, hz: float = 1.0):
-    """SSE: simulated plant samples -> every deployed model -> predictions + rolling alarm stats."""
+    """SSE: every deployed model gets its next held-out test sample (real packages) or a simulated plant
+    sample (mock) -> predictions, true label + caught / missed / false_alarm / ok, rolling alarm stats."""
     live = _get(dep_id)
     stream_ids = sorted({s for spec in live.specs.values() for s in spec.input_streams})
 
@@ -73,8 +99,8 @@ async def live_predictions(dep_id: str, hz: float = 1.0):
             ticks += 1
             preds = {}
             for tid, predictor in live.predictors.items():
-                if _is_camera(predictor):
-                    preds[tid] = await asyncio.to_thread(_camera_frame, dep_id, tid, predictor, ticks - 1)
+                if _replays(predictor):
+                    preds[tid] = await asyncio.to_thread(_replay_tick, dep_id, tid, predictor, ticks - 1)
                 else:
                     preds[tid] = predictor.predict({**sample["streams"], "risk": sample["risk"]})
                 alarms[tid] += bool(preds[tid].get("alarm"))
