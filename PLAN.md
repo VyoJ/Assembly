@@ -143,6 +143,30 @@ GPUs, so GPU training will come from another provider (e.g. Modal): a new `ml/ex
 
 **Cut:** SAM 3 + pseudo-labels, PatchTST, `Dockerfile.runtime`, self-hosted vLLM, stretch goals.
 
+**Status (17 Oct, branch `feature/vision`): items 1 and 4 done, plus YOLO boxes.** All on CPU.
+- Image anomaly (`ml/models/vision.py`, `recipes/image_anomaly.py`, `specs/metal_nut_example*`): ResNet-18 +
+  PatchCore-style kNN, trained on good parts only. MVTec hidden test AUROC ~0.99, KPIs pass; fit 10-20 s,
+  20-40 ms per image.
+- Defect boxes (`recipes/yolo_boxes.py`, `specs/metal_nut_boxes_example*`): YOLO11-nano, wall-clock budget
+  (~75% of `time_budget_s`: ~6.5 min at 600 s). MVTec hidden test image recall 1.0, image FAR 0.02, mAP50 0.71;
+  ~22 ms per image. Validators now accept `boxes` tasks.
+- Live feed (`api/deployments.py`): real deployments get their next held-out test sample each tick (sensors no
+  longer constant), with `truth` and `outcome` (caught / missed / false_alarm / ok); camera ticks carry a
+  `frame_url` served by `GET /api/deployments/{id}/frames/{task}/{sample}`. Mock predictors keep the simulator.
+- Remote executor runs image tasks (images travel in `data/` with relative paths); tested with the fake executor.
+- Weights: `download_data.py --only weights` (resnet18.pth) and `--only yolo` (yolo11n.pt); data_card lists them.
+
+To check (not testable on a Mac):
+1. A real Daytona run of the camera task; the snapshot needs `data/weights/{resnet18.pth,yolo11n.pt}`.
+2. Linux images need `apt-get install libxcb1 libgl1 libglib2.0-0`, or `import ultralytics` fails (it pulls the
+   full OpenCV). Found in a linux/amd64 Docker run.
+3. xgboost + torch in one process crash on macOS only (two libomp); tests set `OMP_NUM_THREADS=1` on macOS.
+   The API server loads sensor and camera models together: confirm on Linux.
+4. Full pipeline with the real LLM and the camera visible (`CATALOG_EXCLUDE` empty): does it write a sensible
+   image `prepare.py` and pick `image_anomaly` / `yolo_boxes`?
+5. MVTec is not in git: whoever hosts the API needs `data/mvtec/metal_nut` (ask Samu for the tar). Daytona boxes
+   don't: prepare.py copies the images into the task workspace.
+
 > Sections 1–9 below are the original plan. Where they mention vLLM or AMD Developer Cloud instances, section 0 wins.
 
 ---
