@@ -8,6 +8,7 @@ written as an N-d array. Split by motor load, so val/test are operating conditio
 
 import harness
 import numpy as np
+from scipy.signal import decimate
 
 TARGET_HZ = 12_000
 WINDOW = 2048  # ~0.17 s at 12 kHz
@@ -24,7 +25,9 @@ for split, loads in SPLIT_BY_LOAD.items():
     X, y, groups = [], [], []
     for _, rec in recordings[recordings["load_hp"].isin(loads)].iterrows():
         signal = harness.load_signal(rec["path"], rec["channel"])
-        signal = signal[:: int(rec["sample_hz"]) // TARGET_HZ]  # 48 kHz normal records -> 12 kHz
+        q = int(rec["sample_hz"]) // TARGET_HZ
+        if q > 1:  # 48 kHz normal records -> 12 kHz, low-pass first so high frequencies don't alias
+            signal = decimate(signal, q, ftype="fir", zero_phase=True)
         for start in range(0, len(signal) - WINDOW + 1, STRIDE):
             X.append(signal[start:start + WINDOW])
             y.append(rec["fault"])

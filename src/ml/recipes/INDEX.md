@@ -32,6 +32,9 @@ borrow what helps. They use only the `harness.py` API described in `program.md`.
   check which ones `prepare.py` already built (read it with `read_workspace_file`).
 - Piecewise-linear RUL target (cap at ~125 cycles) and an asymmetric loss that penalises late predictions.
 - LightGBM as a faster alternative; small Optuna sweep sized with `harness.time_left()`.
+- Raw vibration windows (array inputs): log band energies of the FFT, RMS / kurtosis / crest factor, and the
+  ENVELOPE spectrum (abs of `scipy.signal.hilbert` of a band-passed window, then FFT) for bearing faults: ball
+  faults are weak in the plain spectrum. Normalise per window so other motor loads still match.
 - LSTM / 1D-CNN over fixed windows when trees plateau (torch; must output the final prediction).
 - Vision: larger `image_size` (320+) or tiling for small defects; ensemble PatchKNN with the embedding
   classifier; Ultralytics YOLO only for `boxes` tasks and only if `yolo11n.pt` is listed in `data_card.md`.
