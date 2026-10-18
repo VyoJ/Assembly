@@ -11,6 +11,7 @@
 import json
 import math
 import shutil
+import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -281,5 +282,17 @@ class Predictor:
         return self._shape(self._raw_output(np.asarray(arr, dtype=np.float32)[None]))
 
 
+def _macos_openmp_order() -> None:
+    """macOS only: xgboost (Homebrew libomp) loaded BEFORE torch (its own libomp) in one process segfaults; the
+    other order works. A deployment can hold an xgboost sensor model and a torch camera model, so load torch first.
+    Linux wheels don't clash (server, Daytona)."""
+    if sys.platform == "darwin" and "xgboost" not in sys.modules:
+        try:
+            import torch  # noqa: F401
+        except ImportError:
+            pass
+
+
 def load_predictor(package_path: str) -> Predictor:
+    _macos_openmp_order()
     return Predictor(package_path)

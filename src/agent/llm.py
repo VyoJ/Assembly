@@ -98,11 +98,14 @@ async def text(
 
     async def done(reply: str, history: list[BaseMessage]) -> str:
         reply, fake_tools = clean_reply(reply)
-        if fake_tools or not reply:  # one retry without tools, telling the model to answer directly
-            why = "Tool calls are not available now." if fake_tools else "Your reply was empty."
+        for _ in range(2):  # retries without tools, telling the model to answer directly
+            if not (fake_tools or not reply):
+                break
+            why = ("Tool calls are DISABLED now: tool-call markup in your reply is ignored and nothing will run."
+                   if fake_tools else "Your reply was empty.")
             retry = text_of(await _invoke(llm, [*history, AIMessage(reply or "(empty)"),
-                                                HumanMessage(f"{why} {final_instruction}")]))
-            reply, _ = clean_reply(retry)
+                                                HumanMessage(f"{why} Using only what you already know: {final_instruction}")]))
+            reply, fake_tools = clean_reply(retry)
             calls.append({"tool": "(retry)", "args": {"reason": why}})
         if trace:
             trace({"reply": reply, "tool_calls": calls})

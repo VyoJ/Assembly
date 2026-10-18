@@ -11,3 +11,8 @@ os.environ["RUNS_DIR"] = tempfile.mkdtemp(prefix="assembly-test-runs-")
 # unless OpenMP is single-threaded. Linux wheels don't clash; the server and Daytona boxes run Linux.
 if sys.platform == "darwin":
     os.environ.setdefault("OMP_NUM_THREADS", "1")
+    # ...and torch must load before xgboost (the reverse order segfaults); same rule as ml.package for deployments
+    try:
+        import torch  # noqa: F401
+    except ImportError:
+        pass

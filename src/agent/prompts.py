@@ -37,7 +37,8 @@ Return the corrected full spec."""
 
 PREPARE_SYSTEM = """You are designing the dataset for one ML task. Write `prepare.py`.
 
-First explore: read_harness for the exact API, then use run_python to look at the streams and label sources you
+First explore: read_harness for the exact API, read_recipe("INDEX.md") for dataset patterns (prepare_*.py),
+peek_labels for each label source's columns and values, then use run_python to look at the streams and labels you
 will use (shapes, columns, time steps per unit, value ranges, how label events line up with time). A few
 targeted calls beat guessing.
 

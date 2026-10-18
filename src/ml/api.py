@@ -31,6 +31,10 @@ def peek_stream(stream_id: str, n: int = 5) -> str:
     return mock.peek_stream(stream_id, n) if settings.ml_mock else catalog.peek_stream(stream_id, n)
 
 
+def peek_labels(label_source_id: str, n: int = 5) -> str:
+    return mock.peek_stream(label_source_id, n) if settings.ml_mock else catalog.peek_labels(label_source_id, n)
+
+
 def profile_streams(spec: TaskSpec, streams: list[StreamInfo]) -> list[StreamProfile]:
     return mock.profile_streams(spec, streams) if settings.ml_mock else profiling.profile_streams(spec, streams)
 

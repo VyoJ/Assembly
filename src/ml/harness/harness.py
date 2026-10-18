@@ -202,6 +202,11 @@ def write_dataset(train, val, test, *, groups=None, meta: dict | None = None) ->
     labels_dir.mkdir(parents=True, exist_ok=True)
     fmt = task().get("prediction_format")
     splits = {"train": train, "val": val, "test": test}
+    for split, (X, y) in splits.items():  # fail early and clearly: an empty split breaks every later check
+        if len(y) == 0:
+            sizes = {k: len(v[1]) for k, v in splits.items()}
+            raise ValueError(f"write_dataset: the {split} split is EMPTY (sizes {sizes}). Check how rows are assigned "
+                             "to splits (e.g. the group / unit ids used for the split vs the ones in the data).")
 
     classes = None
     if fmt == "class_probs":  # class names -> indices; the names are kept in meta["classes"]

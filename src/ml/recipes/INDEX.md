@@ -3,7 +3,14 @@
 Reference scripts the agent can read with `read_recipe(name)`. They are examples, not templates:
 borrow what helps. They use only the `harness.py` API described in `program.md`.
 
-## Available
+## Dataset patterns for prepare.py (design phase)
+- `prepare_sensor_history.py`: table streams joined per unit, target from failure events (cycles to failure,
+  capped), CAUSAL per-unit rolling / delta history features built here, split by unit.
+- `prepare_images_binary.py`: camera images + per-image QC labels -> defective or not; one image per part, so a
+  random split stratified by defect type (`meta={"split": "random"}`); don't use folder names as labels.
+- `prepare_images_boxes.py`: same, with boxes from the QC pixel masks (one box per connected defect region).
+
+## Available (train.py)
 - `xgb_baseline.py`: XGBoost in an sklearn Pipeline for scalar / binary_score / class_probs. Budget-aware,
   early stopping on an internal group split, F1 threshold. **Start here for sensor tasks.**
 - `image_anomaly.py`: camera / visual inspection on CPU with a pretrained ResNet-18. `binary_score`:

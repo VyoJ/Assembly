@@ -60,13 +60,14 @@ class Settings(BaseSettings):
 
     # Agent loop limits
     max_fix_attempts: int = 2
-    max_design_attempts: int = 3
+    max_design_attempts: int = 4
     max_tool_calls: int = 5
     max_repairs: int = 2  # targeted repairs of code that fails the pre-run checks
     max_fix_tool_calls: int = 3  # incl. run_python to check a signature before fixing an API error
     propose_run_python_calls: int = 1  # exploration happens once up front; proposals mostly reuse notes.md
     plan_revise_every: int = 4  # rewrite plan.md after this many experiments
-    explore_tool_calls: int = 8  # one exploration pass per task (design: before prepare.py; research: before exp_000)
+    explore_tool_calls: int = 8  # one exploration pass per task before exp_000
+    design_explore_tool_calls: int = 12  # design's first attempt: raw streams + label sources (e.g. masks -> boxes)
     results_context_rows: int = 20
 
     @field_validator("data_dir", "runs_dir")

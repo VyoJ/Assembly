@@ -295,3 +295,15 @@ def peek_stream(stream_id: str, n: int = 5) -> str:
         summary = f"{len(df)} images; first one: shape {img.shape}, dtype {img.dtype}"
         head = head.drop(columns=["path"])
     return f"{stream_id}: {summary}\n{head.to_string(index=False)}"
+
+
+def peek_labels(label_source_id: str, n: int = 5) -> str:
+    """A label source's schema and first rows, for the agent's peek tool."""
+    df = read_labels(label_source_id)
+    lines = [f"{label_source_id}: {len(df)} rows; columns: " + ", ".join(f"{c} ({df[c].dtype})" for c in df.columns)]
+    for c in df.columns:
+        if df[c].dtype == object or str(df[c].dtype) in ("bool", "category", "string", "str"):
+            vc = df[c].value_counts(dropna=False)
+            if len(vc) <= 15:
+                lines.append(f"  {c} values: " + ", ".join(f"{k}: {v}" for k, v in vc.items()))
+    return "\n".join([*lines, df.head(n).to_string(index=False)])
