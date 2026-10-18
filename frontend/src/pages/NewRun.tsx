@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router'
+import { Link, useNavigate } from 'react-router'
 import { ArrowRight, Info, ShieldCheck, Sparkles, Zap } from 'lucide-react'
 import { api, ApiError } from '@/api/client'
 import { STAGES } from '@/api/events'
@@ -7,6 +7,7 @@ import { PageBody, PageHeader } from '@/components/Layout'
 import { Button, Card, Kbd } from '@/components/ui/primitives'
 import { Callout } from '@/components/ui/feedback'
 import { useHealth } from '@/hooks/health'
+import { useApi } from '@/hooks/useApi'
 import { cn } from '@/lib/utils'
 
 const EXAMPLES = [
@@ -23,6 +24,9 @@ export function NewRunPage() {
   const [autoApprove, setAutoApprove] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
+  // The backend runs one pipeline at a time (409 otherwise): show the active one instead of a dead-end error.
+  const runs = useApi(api.listRuns, ['runs'], { intervalMs: 5000 })
+  const active = runs.data?.find((r) => r.source !== 'recorded' && (r.status === 'running' || r.status === 'awaiting_approval'))
 
   const submit = async (e?: FormEvent) => {
     e?.preventDefault()
@@ -134,14 +138,20 @@ export function NewRunPage() {
               </div>
             </fieldset>
 
-            {error && (
+            {active && (
+              <Callout tone="warn" title="A run is already in progress">
+                Assembly runs one pipeline at a time. <Link to={`/runs/${encodeURIComponent(active.run_id)}`} className="underline underline-offset-2">Open {active.run_id}</Link>{' '}
+                ({active.status === 'awaiting_approval' ? 'waiting for your approval' : 'running'}) and start a new one once it finishes.
+              </Callout>
+            )}
+            {error && !(active && error.status === 409) && (
               <Callout tone="bad" title={error.unreachable ? 'Backend unavailable' : 'Could not start the run'}>
-                {error.unreachable ? 'The Assembly API is not reachable. Check that it is running on port 8000.' : error.detail}
+                {error.unreachable ? 'The Assembly API is not reachable right now (it may be starting up); try again in a moment.' : error.detail}
               </Callout>
             )}
 
             <div className="flex items-center gap-3">
-              <Button type="submit" variant="primary" size="lg" loading={submitting} disabled={!goal.trim()}>
+              <Button type="submit" variant="primary" size="lg" loading={submitting} disabled={!goal.trim() || !!active}>
                 <Sparkles className="size-4" /> Start run <ArrowRight className="size-4" />
               </Button>
               <span className="text-xs text-fg-subtle">

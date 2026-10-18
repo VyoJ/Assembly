@@ -101,8 +101,18 @@ async def _execute(rec: RunRecord, auto_approve: bool) -> None:
         rec.status, rec.error = "failed", repr(e)
 
 
+def _active_run() -> RunRecord | None:
+    """A run of this process that hasn't finished (running or waiting for approval)."""
+    return next((r for r in RUNS.values() if r.task is not None and not r.task.done()), None)
+
+
 @router.post("")
 async def start_run(body: StartRun) -> dict:
+    # One run at a time: runs share the LLM rate limit, the executor box and (when hosted) one small container.
+    active = _active_run()
+    if active is not None:
+        raise HTTPException(409, f"Run {active.run_id} is still in progress ({_summary(active)['status']}). "
+                                 "Wait for it to finish before starting another.")
     rec = RunRecord(run_id=new_run_id(), goal=body.goal)
     RUNS[rec.run_id] = rec
     rec.task = asyncio.create_task(_execute(rec, body.auto_approve))

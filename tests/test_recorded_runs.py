@@ -88,3 +88,28 @@ def test_relocate_rebases_paths_recorded_on_another_machine(tmp_path, monkeypatc
     assert relocate("/Users/someone/Assembly/runs/r1/t/package") == target
     assert relocate("/Users/someone/Assembly/runs/r2/t/package") == Path("/Users/someone/Assembly/runs/r2/t/package")
     assert relocate(target) == target
+
+
+def test_only_one_run_at_a_time(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(settings, "runs_dir", tmp_path)
+    monkeypatch.setattr(runs, "RUNS", {})
+
+    async def scenario():
+        blocker = asyncio.Event()
+        rec = runs.RunRecord(run_id="20261018-170000-live", goal="g")
+        rec.task = asyncio.create_task(blocker.wait())
+        runs.RUNS[rec.run_id] = rec
+        from fastapi import HTTPException
+
+        try:
+            await runs.start_run(runs.StartRun(goal="another"))
+            raise AssertionError("second run was accepted")
+        except HTTPException as e:
+            assert e.status_code == 409 and "20261018-170000-live" in e.detail
+        blocker.set()
+        await rec.task
+        assert runs._active_run() is None
+
+    asyncio.run(scenario())
