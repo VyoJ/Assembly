@@ -225,8 +225,8 @@ export function OverviewPage() {
             <div className="flex gap-2.5 rounded-lg border border-line px-3.5 py-3 text-xs leading-relaxed text-fg-muted">
               <Info className="mt-0.5 size-3.5 shrink-0 text-fg-subtle" />
               <span>
-                Runs and deployments live in the API process's memory. Restarting the backend clears this list (workspace
-                files under <Mono>runs/</Mono> stay on disk).
+                Every run is recorded under <Mono>runs/</Mono>. After a backend restart, past runs replay from there (marked
+                recorded) and their deployments load again on first use.
               </span>
             </div>
           </div>

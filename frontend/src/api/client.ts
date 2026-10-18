@@ -5,7 +5,7 @@ import type {
   ExperimentResult,
   Health,
   Prediction,
-  PreviewPoint,
+  StreamPreview,
   RunDetail,
   RunSummary,
   StartRunBody,
@@ -72,7 +72,7 @@ export const api = {
   runEventsPath: (id: string) => `/api/runs/${enc(id)}/events`,
 
   catalog: () => request<Catalog>('/api/streams'),
-  preview: (streamId: string, n = 50) => request<PreviewPoint[]>(`/api/streams/${enc(streamId)}/preview?n=${n}`),
+  preview: (streamId: string, n = 400) => request<StreamPreview>(`/api/streams/${enc(streamId)}/preview?n=${n}`),
 
   deployments: () => request<Deployment[]>('/api/deployments'),
   predict: (depId: string, sample: Record<string, unknown>, taskId?: string) =>

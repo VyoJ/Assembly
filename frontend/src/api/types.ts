@@ -152,10 +152,17 @@ export interface Catalog {
   label_sources: LabelSource[]
 }
 
-/** Simulator output: numeric streams give a number, image streams give {frame_id}. */
-export interface PreviewPoint {
-  cycle: number
-  value: number | { frame_id: number } | unknown
+/** GET /api/streams/{id}/preview: the real data behind a stream (api/streams.py). */
+export interface StreamPreview {
+  kind: 'table' | 'signal' | 'images'
+  /** generated values: distractor streams, or the simulator when the dataset isn't on the server */
+  synthetic: boolean
+  note: string
+  x_label?: string
+  /** table: the unit's failure cycle (from the maintenance log), if known */
+  failure_x?: number | null
+  points?: { x: number; value: number }[]
+  images?: { index: number; record_id: string; url: string }[]
 }
 
 // ---- /api/deployments
