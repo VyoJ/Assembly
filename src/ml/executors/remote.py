@@ -146,6 +146,7 @@ class RemoteExecutor:
             "PYTHONPATH": f"{wsd}:{self.remote_root}/src",
             "PYTHONUNBUFFERED": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
+            "YOLO_CONFIG_DIR": f"{self.remote_root}/.ultralytics",  # the default ~/.config isn't writable in boxes
             # n_jobs=-1 / OpenMP would otherwise start one thread per HOST core and thrash a small box
             **({k: str(self.cpu_threads) for k in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS",
                                                    "LOKY_MAX_CPU_COUNT")} if self.cpu_threads else {}),

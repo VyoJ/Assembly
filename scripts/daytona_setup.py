@@ -38,7 +38,7 @@ def main(args) -> None:
         auto_delete_interval=0, network_block_all=True), timeout=300)
     print(f"sandbox {box.id} up ({time.monotonic() - t0:.0f}s), home={box.get_user_home_dir()}")
     try:
-        check = ("import sys, torch, sklearn, xgboost, lightgbm, pandas, pyarrow, pydantic_settings; "
+        check = ("import sys, torch, sklearn, xgboost, lightgbm, pandas, pyarrow, pydantic_settings, ultralytics, cv2; "
                  "print(sys.version.split()[0], 'torch', torch.__version__, 'cuda', torch.cuda.is_available(), "
                  "'xgb', xgboost.__version__, 'lgb', lightgbm.__version__, 'sklearn', sklearn.__version__)")
         r = box.process.exec(f"python -c \"{check}\"", timeout=120)

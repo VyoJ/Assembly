@@ -15,8 +15,12 @@ from ml.executors.remote import ML_PACKAGES, TORCH_PACKAGES, RemoteExecutor, pin
 TORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 
 
+# System libraries the Python stack needs on Linux: ultralytics pulls the full OpenCV, which needs these.
+APT_PACKAGES = ["libgl1", "libglib2.0-0", "libxcb1"]
+
+
 def snapshot_name() -> str:
-    return f"assembly-ml-cpu-{requirements_hash(pinned(ML_PACKAGES), pinned(TORCH_PACKAGES))}"
+    return f"assembly-ml-cpu-{requirements_hash(APT_PACKAGES, pinned(ML_PACKAGES), pinned(TORCH_PACKAGES))}"
 
 
 class DaytonaExecutor(RemoteExecutor):
@@ -46,6 +50,8 @@ class DaytonaExecutor(RemoteExecutor):
         except Exception:  # noqa: BLE001 - not found: build it
             torch = pinned(TORCH_PACKAGES)
             image = (Image.debian_slim("3.12")
+                     .run_commands("apt-get update && apt-get install -y --no-install-recommends "
+                                   + " ".join(APT_PACKAGES) + " && rm -rf /var/lib/apt/lists/*")
                      .pip_install(*torch, index_url=TORCH_CPU_INDEX)
                      .pip_install(*pinned(ML_PACKAGES))
                      .env({"PYTHONUNBUFFERED": "1", "MPLBACKEND": "Agg"}))
