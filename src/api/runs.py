@@ -25,6 +25,7 @@ class RunRecord:
     state: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     task: asyncio.Task | None = None
+    source: str = "live"  # "recorded": read back from runs/{id}/events.jsonl (an earlier process)
 
 
 RUNS: dict[str, RunRecord] = {}
@@ -44,7 +45,46 @@ class Approval(BaseModel):
 
 def _summary(rec: RunRecord) -> dict:
     status = "awaiting_approval" if approvals.is_pending(rec.run_id) else rec.status
-    return {"run_id": rec.run_id, "goal": rec.goal, "status": status, "error": rec.error}
+    return {"run_id": rec.run_id, "goal": rec.goal, "status": status, "error": rec.error, "source": rec.source}
+
+
+def _load_recorded() -> None:
+    """Make pipeline runs from earlier processes visible: every runs/{id}/events.jsonl with a run_started event that
+    this process doesn't know yet (the UI rebuilds everything from events). A run that stopped without a closing
+    event (process killed) gets an in-memory run_failed so the UI doesn't wait on it forever; files are untouched.
+    run_research.py sessions (no run_started) are not pipeline runs and are skipped."""
+    for path in sorted(settings.runs_dir.glob("*/events.jsonl")):
+        run_id = path.parent.name
+        if run_id in RUNS:
+            continue
+        events = []
+        for line in path.read_text().splitlines():
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                continue  # a line cut off by a killed process
+        start = next((e for e in events if e.get("type") == "run_started"), None)
+        if start is None:
+            continue
+        end = next((e for e in reversed(events) if e.get("type") in ("run_finished", "run_failed")), None)
+        if end is None:
+            error = "interrupted: the run stopped before finishing (no run_finished event)"
+            end = {"type": "run_failed", "ts": events[-1].get("ts", 0), "run_id": run_id, "error": error}
+            events.append(end)
+        status = end.get("status", "done") if end["type"] == "run_finished" else "failed"
+        bus.load(run_id, events)
+        RUNS[run_id] = RunRecord(run_id=run_id, goal=start.get("goal", ""), status=status,
+                                 state={"goal": start.get("goal", ""), "status": status},
+                                 error=end.get("error"), source="recorded")
+
+
+def _record(run_id: str) -> RunRecord:
+    if run_id not in RUNS:
+        _load_recorded()
+    rec = RUNS.get(run_id)
+    if rec is None:
+        raise HTTPException(404, "unknown run")
+    return rec
 
 
 async def _execute(rec: RunRecord, auto_approve: bool) -> None:
@@ -68,22 +108,20 @@ async def start_run(body: StartRun) -> dict:
 
 @router.get("")
 async def list_runs() -> list[dict]:
-    return [_summary(r) for r in RUNS.values()]
+    _load_recorded()
+    return [_summary(r) for r in sorted(RUNS.values(), key=lambda r: r.run_id)]
 
 
 @router.get("/{run_id}")
 async def get_run(run_id: str) -> dict:
-    rec = RUNS.get(run_id)
-    if rec is None:
-        raise HTTPException(404, "unknown run")
+    rec = _record(run_id)
     return {**_summary(rec), "state": rec.state}
 
 
 @router.get("/{run_id}/events")
 async def run_events(run_id: str):
     """SSE: replays past events, then streams new ones. Each event's `event` field is its type."""
-    if run_id not in RUNS:
-        raise HTTPException(404, "unknown run")
+    _record(run_id)
 
     async def stream():
         q = bus.subscribe(run_id)

@@ -6,7 +6,7 @@ import { bestExperiment, taskPhase } from '@/lib/runModel'
 import { cn, fmt, formatClock, kpiLabel } from '@/lib/utils'
 import { Badge, Card, CardHeader, Label, Mono } from '@/components/ui/primitives'
 import { Callout, EmptyState } from '@/components/ui/feedback'
-import { Disclosure, Markdown } from '@/components/ui/content'
+import { Disclosure, LongText, Markdown } from '@/components/ui/content'
 import { KpiBadge } from '@/components/status'
 import { describe, eventTaskId } from './describe'
 
@@ -111,12 +111,12 @@ function TaskCard({ t, live }: { t: TaskView; live: boolean }) {
 
         {t.dropped && (
           <Callout tone="bad" icon={<AlertTriangle className="size-3.5" />} title="Task dropped">
-            {t.dropped}
+            <LongText text={t.dropped} />
           </Callout>
         )}
         {lastVal && !lastVal.ok && !t.dropped && (
           <Callout tone="warn" title={`Validation failed (attempt ${lastVal.attempt})`}>
-            {lastVal.messages.join(' · ')}
+            <LongText text={lastVal.messages.join(' · ')} />
           </Callout>
         )}
         {t.researchDone && (

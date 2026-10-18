@@ -52,6 +52,11 @@ class EventBus:
         if q in self._subs[run_id]:
             self._subs[run_id].remove(q)
 
+    def load(self, run_id: str, events: list[dict]) -> None:
+        """Seed a run's history (e.g. a recorded run read back from events.jsonl) without persisting it again."""
+        if not self._history[run_id]:
+            self._history[run_id] = list(events)
+
     def history(self, run_id: str) -> list[dict]:
         return list(self._history[run_id])
 

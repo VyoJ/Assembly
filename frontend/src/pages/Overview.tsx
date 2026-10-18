@@ -1,5 +1,5 @@
 import { Link } from 'react-router'
-import { Activity, ArrowRight, Clock, Info, Plus, Rocket, Workflow } from 'lucide-react'
+import { Activity, ArrowRight, Clock, History, Info, Plus, Rocket, Workflow } from 'lucide-react'
 import { api } from '@/api/client'
 import type { Deployment, RunSummary } from '@/api/types'
 import { PageBody, PageHeader } from '@/components/Layout'
@@ -34,6 +34,13 @@ function RunRow({ run }: { run: RunSummary }) {
         </div>
         {run.error && <div className="mt-1 truncate font-mono text-[11px] text-bad">{run.error}</div>}
       </div>
+      {run.source === 'recorded' && (
+        <span title="Recorded by an earlier API process; replayed from runs/">
+          <Badge>
+            <History className="size-3" /> recorded
+          </Badge>
+        </span>
+      )}
       <RunStatusBadge status={run.status} />
       <ArrowRight className="size-4 shrink-0 text-fg-subtle opacity-0 transition-opacity group-hover:opacity-100" />
     </Link>

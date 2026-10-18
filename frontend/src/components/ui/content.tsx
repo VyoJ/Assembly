@@ -209,3 +209,19 @@ export function Tabs<T extends string>({
     </div>
   )
 }
+
+/** Validator / design messages can list hundreds of columns: show the start, the rest on demand. */
+const LONG_TEXT_CHARS = 360
+
+export function LongText({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  if (text.length <= LONG_TEXT_CHARS) return <>{text}</>
+  return (
+    <>
+      <span className="break-words">{open ? text : `${text.slice(0, LONG_TEXT_CHARS)}…`}</span>{' '}
+      <button onClick={() => setOpen((o) => !o)} className="text-[11px] underline underline-offset-2 opacity-80 hover:opacity-100">
+        {open ? 'show less' : `show all (${text.length.toLocaleString()} characters)`}
+      </button>
+    </>
+  )
+}

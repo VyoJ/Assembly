@@ -4,7 +4,7 @@ import type { RunModel } from '@/lib/runModel'
 import { fmt } from '@/lib/utils'
 import { Badge, ButtonLink, Card, CardHeader, Label, Mono } from '@/components/ui/primitives'
 import { Callout, EmptyState } from '@/components/ui/feedback'
-import { KeyValue, Markdown } from '@/components/ui/content'
+import { KeyValue, LongText, Markdown } from '@/components/ui/content'
 
 function MetricsGrid({ metrics }: { metrics: Record<string, number> }) {
   return (
@@ -94,7 +94,11 @@ export function ResultsTab({ model, detail }: { model: RunModel; detail?: RunDet
               }
             />
             <div className="space-y-4 p-4">
-              {t?.dropped && <Callout tone="bad">{t.dropped}</Callout>}
+              {t?.dropped && (
+                <Callout tone="bad">
+                  <LongText text={t.dropped} />
+                </Callout>
+              )}
               {report && (
                 <div>
                   <div className="mb-2 flex items-center gap-2">

@@ -60,6 +60,6 @@ straight through. Settings (`frontend/.env.local`, see `.env.example`):
 
 ## Known backend limits surfaced in the UI
 
-Runs and deployments are lost on API restart. There is no auth, cancel/pause, raw-data preview or upload endpoint.
+Runs and deployments survive API restarts as **recorded** runs: the API reads `runs/*/events.jsonl` back (replay only, marked "recorded"; a run that was killed shows as failed / interrupted), and a recorded run's deployment is listed as stopped and loads its packages on first use. There is no auth, cancel/pause, raw-data preview or upload endpoint.
 The stream preview and the live endpoint use `plant/simulator.py` (synthetic data). Deployment is not gated on the
 final test result.

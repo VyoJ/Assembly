@@ -105,6 +105,8 @@ export interface RunSummary {
   goal: string
   status: RunStatus
   error: string | null
+  /** "recorded": read back from runs/{id}/events.jsonl by a later API process (replay only, no live control) */
+  source?: 'live' | 'recorded'
 }
 
 /** OuterState as JSON (src/agent/state.py). Only updated after each pipeline node finishes. */

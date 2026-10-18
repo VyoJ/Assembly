@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
-import { AlertTriangle, ChevronLeft, Clock, RotateCw } from 'lucide-react'
+import { AlertTriangle, ChevronLeft, Clock, History, RotateCw } from 'lucide-react'
 import { api } from '@/api/client'
 import { useApi } from '@/hooks/useApi'
 import { useRunEvents } from '@/hooks/useRunEvents'
@@ -90,7 +90,15 @@ export function RunPage() {
             <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-fg-subtle">
               <Mono>{runId}</Mono>
               <RunStatusBadge status={status} />
-              <StreamStatusBadge status={stream.status} title={stream.detail} />
+              {detail.data?.source === 'recorded' ? (
+                <span title="Recorded by an earlier API process; replayed from runs/ (no live control)">
+                  <Badge>
+                    <History className="size-3" /> recorded
+                  </Badge>
+                </span>
+              ) : (
+                <StreamStatusBadge status={stream.status} title={stream.detail} />
+              )}
               {model.autoApprove !== undefined && <Badge>{model.autoApprove ? 'auto-approve' : 'manual approval'}</Badge>}
               {elapsed !== undefined && elapsed > 0 && (
                 <span className="inline-flex items-center gap-1">

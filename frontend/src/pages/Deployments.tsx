@@ -340,7 +340,13 @@ function LiveSimulator({ dep }: { dep: Deployment }) {
                           <LineChart data={series} margin={{ top: 6, right: 8, bottom: 0, left: 0 }}>
                             <CartesianGrid stroke={CHART.grid} vertical={false} />
                             <XAxis dataKey="cycle" {...axisProps} minTickGap={24} />
-                            <YAxis {...axisProps} width={44} tickFormatter={(v: number) => fmt(v, 3)} domain={['auto', 'auto']} />
+                            <YAxis
+                              {...axisProps}
+                              width={56}
+                              tickFormatter={(v: number) => fmt(v, 3)}
+                              // binary scores are probabilities: a fixed 0-1 axis keeps tiny scores readable
+                              domain={key === 'score' ? [0, 1] : ['auto', 'auto']}
+                            />
                             <Tooltip
                               content={({ active, payload }) => {
                                 const p = active && payload?.[0]?.payload
@@ -468,7 +474,7 @@ export function DeploymentsPage() {
 
   return (
     <>
-      <PageHeader title="Deployments" description="Models packaged and registered by completed runs. Held in API memory; cleared on restart." />
+      <PageHeader title="Deployments" description="Models packaged and registered by completed runs. Deployments from earlier API processes are listed as stopped and load on first use." />
       <PageBody>
         {deps.loading && !deps.data ? (
           <div className="grid gap-6 lg:grid-cols-[280px_1fr]">

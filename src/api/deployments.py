@@ -7,21 +7,63 @@ from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
 
 from core import registry
+from core.config import settings
+from core.contracts import Deployment, TaskSpec
+from ml import mock, package
 from plant import simulator
 
 router = APIRouter(prefix="/deployments", tags=["deployments"])
 
 
+def _recorded() -> dict[str, tuple[Deployment, Path]]:
+    """Deployments made by earlier API processes, from the 'deployed' events in runs/*/events.jsonl."""
+    out = {}
+    for path in sorted(settings.runs_dir.glob("*/events.jsonl")):
+        for line in path.read_text().splitlines():
+            if '"deployed"' not in line:
+                continue
+            try:
+                event = json.loads(line)
+                dep = Deployment.model_validate(event["deployment"])
+            except (ValueError, KeyError):
+                continue
+            out[dep.id] = (dep.model_copy(update={"status": "stopped"}), path.parent)
+    return out
+
+
+def _activate(dep: Deployment, run_dir: Path) -> registry.LiveDeployment:
+    """Load a recorded deployment's packages (real or mock) and register it as live."""
+    specs, predictors = {}, {}
+    for tid in dep.task_ids:
+        specs[tid] = TaskSpec.model_validate_json((run_dir / tid / "task.json").read_text())
+        pkg = Path(dep.package_paths.get(tid, ""))
+        manifest = json.loads((pkg / "manifest.json").read_text())
+        # a mock run's package works in any mode; a real one always needs the real loader
+        predictors[tid] = (mock.load_predictor if manifest.get("mock") else package.load_predictor)(str(pkg))
+    live = registry.LiveDeployment(dep.model_copy(update={"status": "live"}), specs, predictors)
+    registry.deployments[dep.id] = live
+    return live
+
+
 def _get(dep_id: str) -> registry.LiveDeployment:
     live = registry.deployments.get(dep_id)
     if live is None:
-        raise HTTPException(404, "unknown deployment")
+        recorded = _recorded().get(dep_id)
+        if recorded is None:
+            raise HTTPException(404, "unknown deployment")
+        try:
+            live = _activate(*recorded)  # first use of a recorded deployment: load its packages now
+        except Exception as e:
+            raise HTTPException(409, f"recorded deployment {dep_id} could not be loaded: {e}") from e
     return live
 
 
 @router.get("")
 async def list_deployments() -> list[dict]:
-    return [d.deployment.model_dump() for d in registry.deployments.values()]
+    """Live deployments, plus recorded ones from earlier processes ('stopped' until first used)."""
+    live = [d.deployment.model_dump() for d in registry.deployments.values()]
+    known = {d["id"] for d in live}
+    return live + [dep.model_dump() for dep_id, (dep, _) in _recorded().items() if dep_id not in known]
 
 
 @router.post("/{dep_id}/predict")

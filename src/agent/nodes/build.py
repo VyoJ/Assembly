@@ -25,7 +25,12 @@ async def design(state: OuterState) -> dict:
         report = out.get("report")
         if report is not None and report.ok:
             return t.id, ws, None
-        reason = "; ".join(report.messages) if report else out.get("error", "no valid prepare.py")
+        if report is not None:  # keep the reason readable: the full messages are in the validation events
+            shown = report.messages[:3]
+            more = len(report.messages) - len(shown)
+            reason = "; ".join(shown) + (f"; ... and {more} more (see the last validation event)" if more > 0 else "")
+        else:
+            reason = out.get("error", "no valid prepare.py")
         return t.id, None, f"design failed after {out.get('attempts', 0)} attempts: {reason}"
 
     results = await asyncio.gather(*(one(t) for t in state["spec"].tasks))
