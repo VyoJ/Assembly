@@ -1,6 +1,7 @@
 """Pipeline runs from earlier processes are listed and replayed from runs/{id}/events.jsonl."""
 
 import json
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -76,3 +77,14 @@ def test_short_reason_keeps_the_first_messages():
     out = short_reason(long)
     assert out.endswith("... and 497 more") and out.count("FAIL") == 3
     assert short_reason("short") == "short"
+
+
+def test_relocate_rebases_paths_recorded_on_another_machine(tmp_path, monkeypatch):
+    from ml.workspace import relocate
+
+    monkeypatch.setattr(settings, "runs_dir", tmp_path / "vol" / "runs")
+    target = tmp_path / "vol" / "runs" / "r1" / "t" / "package"
+    target.mkdir(parents=True)
+    assert relocate("/Users/someone/Assembly/runs/r1/t/package") == target
+    assert relocate("/Users/someone/Assembly/runs/r2/t/package") == Path("/Users/someone/Assembly/runs/r2/t/package")
+    assert relocate(target) == target

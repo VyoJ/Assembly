@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router'
-import { Boxes, Database, LayoutDashboard, Menu, Plus, Rocket, X } from 'lucide-react'
+import { Boxes, Database, LayoutDashboard, Loader2, Menu, Plus, Rocket, X } from 'lucide-react'
 import { useHealth } from '@/hooks/health'
 import { cn } from '@/lib/utils'
 import { Badge } from './ui/primitives'
@@ -28,7 +28,7 @@ function Logo() {
 
 function BackendStatus() {
   const { data, error, loading } = useHealth()
-  if (loading && !data) return <div className="text-xs text-fg-subtle">Checking backend…</div>
+  if (loading && !data) return <div className="text-xs text-fg-subtle">Connecting (may be cold starting)…</div>
   if (error && !data)
     return (
       <Badge tone="bad" dot>
@@ -80,11 +80,29 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
   )
 }
 
+/** The hosted backend scales to zero when idle (Modal): the first request after a pause waits for a container
+ * to start. After a short grace period with no /health answer, say so instead of looking broken. */
+const COLD_START_AFTER_MS = 2500
+
+function useWaking(hasData: boolean): boolean {
+  const [slow, setSlow] = useState(false)
+  useEffect(() => {
+    if (hasData) {
+      setSlow(false)
+      return
+    }
+    const t = setTimeout(() => setSlow(true), COLD_START_AFTER_MS)
+    return () => clearTimeout(t)
+  }, [hasData])
+  return slow && !hasData
+}
+
 export function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const location = useLocation()
   const health = useHealth()
-  const offline = !!health.error?.unreachable && !health.loading
+  const waking = useWaking(!!health.data)
+  const offline = !!health.error?.unreachable && !health.loading && !waking
 
   useEffect(() => setMobileOpen(false), [location.pathname])
 
@@ -125,6 +143,18 @@ export function Layout() {
       )}
 
       <main className="min-w-0">
+        {waking && (
+          <div
+            role="status"
+            className="flex items-center gap-2 border-b border-accent/25 bg-accent-soft px-4 py-2 text-xs text-accent lg:px-8"
+          >
+            <Loader2 className="size-3.5 shrink-0 animate-spin" />
+            <span>
+              Waking up the backend. It scales to zero when nobody is using it, so the first request after a pause starts
+              a fresh container (usually under a minute). Recorded runs and deployments reload automatically.
+            </span>
+          </div>
+        )}
         {offline && (
           <div className="border-b border-warn/25 bg-warn-soft px-4 py-2 text-xs text-warn lg:px-8">
             The Assembly API is unreachable. Data on screen may be stale; reconnecting automatically.

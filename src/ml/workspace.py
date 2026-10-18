@@ -32,6 +32,23 @@ KEY_PACKAGES = [
 ]
 
 
+def relocate(path: str | Path) -> Path:
+    """A path recorded on another machine (e.g. /Users/.../runs/<run>/<task>/package) rebased onto this machine's
+    RUNS_DIR / DATA_DIR when it doesn't exist as written, so recorded runs and packages survive being moved
+    (e.g. uploaded to a server volume). Unchanged if it exists or can't be mapped."""
+    p = Path(path)
+    if p.exists():
+        return p
+    parts = p.parts
+    for anchor, base in (("runs", settings.runs_dir), ("data", settings.data_dir)):
+        if anchor in parts:
+            i = len(parts) - 1 - parts[::-1].index(anchor)  # the last 'runs' / 'data' segment
+            candidate = base.joinpath(*parts[i + 1:])
+            if candidate.exists():
+                return candidate
+    return p
+
+
 def ws_dir(ws: Workspace) -> Path:
     return Path(ws.path)
 

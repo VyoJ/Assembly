@@ -10,6 +10,7 @@ from core import registry
 from core.config import settings
 from core.contracts import Deployment, TaskSpec
 from ml import mock, package
+from ml.workspace import relocate
 from plant import simulator
 
 router = APIRouter(prefix="/deployments", tags=["deployments"])
@@ -36,7 +37,7 @@ def _activate(dep: Deployment, run_dir: Path) -> registry.LiveDeployment:
     specs, predictors = {}, {}
     for tid in dep.task_ids:
         specs[tid] = TaskSpec.model_validate_json((run_dir / tid / "task.json").read_text())
-        pkg = Path(dep.package_paths.get(tid, ""))
+        pkg = relocate(dep.package_paths.get(tid, ""))  # recorded on another machine / before a move
         manifest = json.loads((pkg / "manifest.json").read_text())
         # a mock run's package works in any mode; a real one always needs the real loader
         predictors[tid] = (mock.load_predictor if manifest.get("mock") else package.load_predictor)(str(pkg))

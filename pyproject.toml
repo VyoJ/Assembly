@@ -27,6 +27,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ipykernel>=7.4.0",
+    "modal>=1.6.2",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.17.0",

@@ -158,6 +158,10 @@ class Predictor:
         self.normal_class = self.manifest.get("normal_class")
         rp = self.path / "replay_inputs.parquet"
         self._replay = pd.read_parquet(rp) if rp.exists() else None
+        if self._replay is not None and "path" in self._replay:  # absolute paths from the machine that trained it
+            from ml.workspace import relocate
+
+            self._replay["path"] = [str(relocate(p)) for p in self._replay["path"]]
         self._stored = self._load_stored()
         self._truth = _read_json(self.path / "replay_labels.json")
 
