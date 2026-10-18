@@ -11,7 +11,7 @@ from sse_starlette.sse import EventSourceResponse
 from agent.graph import new_run_id, run_pipeline
 from core import approvals
 from core.config import settings
-from core.events import bus
+from core.events import bus, short_reason
 from ml.workspace import list_experiments
 
 router = APIRouter(prefix="/runs", tags=["runs"])
@@ -72,6 +72,9 @@ def _load_recorded() -> None:
             end = {"type": "run_failed", "ts": events[-1].get("ts", 0), "run_id": run_id, "error": error}
             events.append(end)
         status = end.get("status", "done") if end["type"] == "run_finished" else "failed"
+        for e in events:  # runs recorded before reasons were shortened at the source
+            if e.get("type") == "task_dropped" and isinstance(e.get("reason"), str):
+                e["reason"] = short_reason(e["reason"])
         bus.load(run_id, events)
         RUNS[run_id] = RunRecord(run_id=run_id, goal=start.get("goal", ""), status=status,
                                  state={"goal": start.get("goal", ""), "status": status},

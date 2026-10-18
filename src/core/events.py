@@ -15,6 +15,17 @@ from fastapi.encoders import jsonable_encoder
 from core.config import settings
 
 
+def short_reason(text: str, keep: int = 3, max_chars: int = 600) -> str:
+    """Long '; '-separated message lists (e.g. one validator failure per feature column) -> the first few plus a
+    count. Short texts are returned unchanged."""
+    if len(text) <= max_chars:
+        return text
+    parts = text.split("; ")
+    if len(parts) <= keep:
+        return text[:max_chars] + "..."
+    return "; ".join(parts[:keep]) + f"; ... and {len(parts) - keep} more"
+
+
 class EventBus:
     def __init__(self) -> None:
         self._history: dict[str, list[dict]] = defaultdict(list)

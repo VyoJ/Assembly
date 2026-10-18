@@ -8,7 +8,7 @@ from agent.state import OuterState
 from core import approvals
 from core.config import settings
 from core.contracts import TaskSpec
-from core.events import bus
+from core.events import bus, short_reason
 from ml import api as ml_api
 from ml import scoring
 
@@ -36,7 +36,7 @@ async def design(state: OuterState) -> dict:
     results = await asyncio.gather(*(one(t) for t in state["spec"].tasks))
     dropped = {tid: why for tid, _, why in results if why}
     for tid, why in dropped.items():
-        bus.emit(run_id, "task_dropped", task_id=tid, reason=why)
+        bus.emit(run_id, "task_dropped", task_id=tid, reason=short_reason(why))
     workspaces = {tid: ws for tid, ws, _ in results if ws is not None}
     return {"workspaces": workspaces, "dropped": dropped, "status": "running" if workspaces else "no_tasks"}
 
@@ -85,5 +85,5 @@ async def research(state: OuterState) -> dict:
             best[tid] = out["best"]
         else:
             dropped[tid] = f"no successful experiment ({out.get('stop_reason')})"
-            bus.emit(run_id, "task_dropped", task_id=tid, reason=dropped[tid])
+            bus.emit(run_id, "task_dropped", task_id=tid, reason=short_reason(dropped[tid]))
     return {"best": best, "dropped": dropped}

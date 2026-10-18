@@ -9,7 +9,7 @@ import { useApi } from '@/hooks/useApi'
 import { cn, fmt, formatDuration, kpiLabel } from '@/lib/utils'
 import { Badge, Card, CardHeader, Label, Mono, Skeleton, Stat } from '@/components/ui/primitives'
 import { EmptyState, ErrorState } from '@/components/ui/feedback'
-import { CodeBlock, KeyValue } from '@/components/ui/content'
+import { CodeBlock, KeyValue, LongText } from '@/components/ui/content'
 import { ExperimentStatusBadge, KpiBadge } from '@/components/status'
 import { ChartTooltip, LegendDot } from '@/components/charts'
 import { axisProps, CHART } from '@/components/chartTheme'
@@ -186,9 +186,13 @@ function TaskExperiments({ runId, model, taskId }: { runId: string; model: RunMo
           icon={<FlaskConical className="size-5" />}
           title="No experiments yet"
           description={
-            task?.dropped
-              ? `This task was dropped: ${task.dropped}`
-              : 'Experiments appear once the plan is approved and the research loop runs train.py.'
+            task?.dropped ? (
+              <>
+                This task was dropped: <LongText text={task.dropped} />
+              </>
+            ) : (
+              'Experiments appear once the plan is approved and the research loop runs train.py.'
+            )
           }
         />
       </Card>

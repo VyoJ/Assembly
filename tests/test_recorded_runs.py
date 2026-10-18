@@ -67,3 +67,12 @@ def test_recorded_deployment_is_listed_and_activated_on_first_use(tmp_path, monk
     assert "t" in out
     assert [(d["id"], d["status"]) for d in client.get("/api/deployments").json()] == [("dep_old", "live")]
     assert client.post("/api/deployments/dep_nope/predict", json={}).status_code == 404
+
+
+def test_short_reason_keeps_the_first_messages():
+    from core.events import short_reason
+
+    long = "design failed: " + "; ".join(f"FAIL format: feature 'f{i}' must be finite" for i in range(500))
+    out = short_reason(long)
+    assert out.endswith("... and 497 more") and out.count("FAIL") == 3
+    assert short_reason("short") == "short"

@@ -57,6 +57,8 @@ prepare.py must:
 - pandas is 3.x: text columns are PyArrow-backed `str`; use .to_numpy() (not .values) before scikit-learn / numpy
   indexing; select numeric columns explicitly before groupby/rolling; no chained assignment (see the API notes
   in recipes INDEX.md)
+- features must be finite: rolling std / lags / diffs are NaN for the first rows of each unit; fill them (e.g.
+  .fillna(0)) before write_dataset, or the validators reject the dataset
 - build feature columns as a dict / list of Series and add them with ONE pd.concat(axis=1), not one df[col] = ...
   at a time (that is slow and fragments the frame); prefer groupby(...).rolling / shift over transform(lambda)
 - be deterministic (fixed seeds) and reasonably fast

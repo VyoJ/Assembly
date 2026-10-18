@@ -29,7 +29,9 @@ borrow what helps. They use only the `harness.py` API described in `program.md`.
   `.to_numpy(dtype=object)` for strings). Copy-on-write is always on: never assign through a chained index
   (`df[mask][col] = ...`); use `df.loc[mask, col] = ...`. Before `groupby(...).rolling(...)` / `.mean()` on a frame,
   select the numeric feature columns explicitly (ids and text columns make it fail: "No numeric types to
-  aggregate").
+  aggregate"). Rolling `.std()` and `.shift()` / lags are NaN for the first rows of every unit (a window of one
+  row has no spread; lag 2 has no row 2 back): fill them (`.fillna(0)` or the unit's first value) before
+  `write_dataset`, whose validators reject NaN features.
 - XGBoost: `early_stopping_rounds`, `eval_metric` and `callbacks` go in the CONSTRUCTOR
   (`xgb.XGBRegressor(n_estimators=2000, early_stopping_rounds=50)`), not in `fit()`; `fit(X, y, eval_set=[(Xv, yv)],
   verbose=False)`. A model built with `early_stopping_rounds` needs an `eval_set` every time it is fit: to refit on
