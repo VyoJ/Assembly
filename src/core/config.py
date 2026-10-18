@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     plan_revise_every: int = 4  # rewrite plan.md after this many experiments
     explore_tool_calls: int = 8  # one exploration pass per task before exp_000
     design_explore_tool_calls: int = 12  # design's first attempt: raw streams + label sources (e.g. masks -> boxes)
+    design_fix_tool_calls: int = 4  # a design fix: reproduce the error on a few rows with run_python, then fix
     results_context_rows: int = 20
 
     @field_validator("data_dir", "runs_dir")

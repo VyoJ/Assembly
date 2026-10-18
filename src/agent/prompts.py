@@ -68,8 +68,11 @@ Validation feedback from the previous attempt (fix these):
 """
 
 PREPARE_FIX = """Your previous prepare.py crashed or failed validation (messages and output above, with the code). Don't start over and
-don't re-explore: change only what the messages ask for (at most 2 tool calls, only if you must check something),
-keep everything else, and reply with the complete corrected prepare.py in ONE ```python block."""
+don't re-explore: change only what the messages ask for and keep everything else.
+If it CRASHED: before answering, reproduce the failing step with run_python on a few rows (e.g. the same groupby /
+rolling on df.head(200)) and confirm your fix works there; don't just re-read harness.py. Typical pandas causes:
+non-numeric columns (ids, strings) left in a frame you aggregate, or a groupby key that is also a value column.
+Reply with the complete corrected prepare.py in ONE ```python block."""
 
 RESEARCH_USER = """# task.json
 {spec}

@@ -31,7 +31,7 @@ async def write_prepare(state: DesignState) -> dict:
         mock=lambda: mock_llm.prepare(ws.spec, feedback if report else ""),
         tools=design_tools(ws),
         # first attempt explores the raw streams; a validation fix is a targeted edit of the previous code
-        max_tool_calls=2 if fixing else settings.design_explore_tool_calls if not state.get("attempts") else settings.max_tool_calls,
+        max_tool_calls=settings.design_fix_tool_calls if fixing else settings.design_explore_tool_calls if not state.get("attempts") else settings.max_tool_calls,
         on_tool_call=lambda name, args: bus.emit(run_id, "tool_call", task_id=ws.task_id, tool=name, args=args),
         final_instruction=prompts.FORMAT_REMINDER_PREPARE,
         trace=lambda d: ws_files.log_llm_call(ws, {"step": f"design attempt {state.get('attempts', 0) + 1}", **d}),

@@ -230,7 +230,13 @@ def write_dataset(train, val, test, *, groups=None, meta: dict | None = None) ->
         info["classes"] = classes
     if not info["groups"]:
         del info["groups"]
-    info = {**info, **(meta or {})}
+    meta = dict(meta or {})
+    clobbered = sorted(k for k in ("prediction_format", "input_kind", "sizes", "groups") if k in meta)
+    if clobbered:  # written by write_dataset itself; a caller's value would break validators and scoring
+        print(f"write_dataset: ignoring meta keys {clobbered} (set by write_dataset; pass groups=... for groups)")
+        for k in clobbered:
+            meta.pop(k)
+    info = {**info, **meta}
     if "groups" in info and not info.get("split"):
         info["split"] = "group"  # groups given but no strategy: they only make sense as a group split
         print("write_dataset: meta['split'] not set; using 'group' because groups were given")

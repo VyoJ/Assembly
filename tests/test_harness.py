@@ -130,3 +130,23 @@ def test_groups_without_split_default_to_a_group_split(tmp_path, monkeypatch):
     assert json.loads((ws / "data" / "meta.json").read_text())["split"] == "group"
     harness.write_dataset(tr, va, te, groups={"train": gtr, "val": gva, "test": gte}, meta={"split": "temporal"})
     assert json.loads((ws / "data" / "meta.json").read_text())["split"] == "temporal"  # explicit choice wins
+
+
+def test_write_dataset_ignores_reserved_meta_keys(tmp_path, monkeypatch):
+    import json
+
+    import numpy as np
+    import pandas as pd
+
+    from ml.harness import harness as h
+
+    monkeypatch.setattr(h, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setenv("ASSEMBLY_LABELS_DIR", str(tmp_path / "labels"))
+    (tmp_path / "data").mkdir()
+    (tmp_path / "labels").mkdir()
+    monkeypatch.setattr(h, "task", lambda: {"prediction_format": "scalar"})
+    part = (pd.DataFrame({"a": np.arange(4.0)}), pd.Series(np.arange(4.0)))
+    h.write_dataset(part, part, part, groups={s: [1, 1, 2, 2] for s in ("train", "val", "test")},
+                    meta={"split": "group", "input_kind": "tabular", "sizes": 3})
+    meta = json.loads((tmp_path / "data" / "meta.json").read_text())
+    assert meta["input_kind"] == {"train": "table", "val": "table", "test": "table"} and meta["sizes"]["train"] == 4
