@@ -1,5 +1,5 @@
 """Through runner.static_check (a subprocess, as the pipeline runs it): importing xgboost into the test process
-would make later torch tests segfault on macOS (two libomp; see ml.package._macos_openmp_order)."""
+would make later torch tests segfault on macOS (two libomp; see ml.package process isolation)."""
 
 import importlib.util
 

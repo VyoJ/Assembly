@@ -282,17 +282,82 @@ class Predictor:
         return self._shape(self._raw_output(np.asarray(arr, dtype=np.float32)[None]))
 
 
-def _macos_openmp_order() -> None:
-    """macOS only: xgboost (Homebrew libomp) loaded BEFORE torch (its own libomp) in one process segfaults; the
-    other order works. A deployment can hold an xgboost sensor model and a torch camera model, so load torch first.
-    Linux wheels don't clash (server, Daytona)."""
-    if sys.platform == "darwin" and "xgboost" not in sys.modules:
+# ---------------------------------------------------------------- process isolation (macOS)
+#
+# On macOS, xgboost and lightgbm (Homebrew libomp) and torch (its own libomp) can't share a process reliably: xgboost
+# needs torch loaded first, lightgbm needs the reverse, and all three together deadlock. A deployment can hold a
+# lightgbm sensor model and a torch camera model, so there each predictor runs in its own worker process
+# (ml/predictor_worker.py, started with `python -m` so it only loads its own library). Linux wheels don't clash, so the server and Daytona keep predictors in-process.
+
+PROXY_ATTRS = ("path", "fmt", "input_kind", "threshold", "horizon", "classes", "normal_class", "features",
+               "manifest", "provider", "n_replay")
+PROXY_METHODS = ("predict", "replay", "truth", "replay_paths")
+
+
+class IsolatedPredictor:
+    """Same interface the API uses (attributes in PROXY_ATTRS, methods in PROXY_METHODS); the model lives in a
+    worker process. Calls are serialised per predictor."""
+
+    def __init__(self, package_path: str):
+        import secrets
+        import subprocess
+        import threading
+        from multiprocessing.connection import Listener
+
+        authkey = secrets.token_bytes(16)
+        with Listener(("127.0.0.1", 0), authkey=authkey) as listener:
+            self._proc = subprocess.Popen(
+                [sys.executable, "-m", "ml.predictor_worker", str(package_path), str(listener.address[1]), authkey.hex()])
+            self._conn = listener.accept()
+        self._lock = threading.Lock()
+        if not self._conn.poll(300):
+            raise RuntimeError(f"predictor worker for {package_path} did not start")
+        ok, attrs = self._conn.recv()
+        if not ok:
+            raise RuntimeError(f"predictor worker for {package_path}: {attrs}")
+        self.__dict__.update(attrs)
+
+    def _call(self, name: str, *args):
+        with self._lock:
+            if self._proc.poll() is not None:
+                raise RuntimeError(f"predictor worker for {self.path} exited (code {self._proc.returncode})")
+            self._conn.send((name, args))
+            ok, value = self._conn.recv()
+        if not ok:
+            raise RuntimeError(value)
+        return value
+
+    def predict(self, sample: dict) -> dict:
+        return self._call("predict", sample)
+
+    def replay(self, i: int) -> dict:
+        return self._call("replay", i)
+
+    def truth(self, sample_id: str):
+        return self._call("truth", sample_id)
+
+    def replay_paths(self) -> dict:
+        return self._call("replay_paths")
+
+    def close(self) -> None:
+        self._conn.close()
         try:
-            import torch  # noqa: F401
-        except ImportError:
-            pass
+            self._proc.wait(timeout=5)
+        except Exception:  # noqa: BLE001
+            self._proc.kill()
+
+    def __del__(self) -> None:
+        proc = self.__dict__.get("_proc")
+        if proc is not None and proc.poll() is None:
+            proc.kill()
 
 
-def load_predictor(package_path: str) -> Predictor:
-    _macos_openmp_order()
-    return Predictor(package_path)
+def load_predictor(package_path: str, isolate: bool | None = None):
+    """A Predictor for a package. isolate=None follows settings.isolate_predictors ("auto": a worker process on
+    macOS, see above; in-process elsewhere)."""
+    if isolate is None:
+        from core.config import settings
+
+        mode = settings.isolate_predictors
+        isolate = mode == "on" or (mode == "auto" and sys.platform == "darwin")
+    return IsolatedPredictor(package_path) if isolate else Predictor(package_path)

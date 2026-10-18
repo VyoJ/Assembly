@@ -159,7 +159,21 @@ export interface PreviewPoint {
 // ---- /api/deployments
 
 /** One task's prediction; keys depend on the prediction format (see ml/package.py Predictor). */
-export type Prediction = Record<string, unknown> & { alarm?: boolean; latency_ms?: number }
+export type Prediction = Record<string, unknown> & {
+  alarm?: boolean
+  latency_ms?: number
+  /** boxes format: [x1, y1, x2, y2, score, class] in image pixels */
+  boxes?: number[][]
+  /** Live feed of a real deployment (api/deployments.py): the held-out test sample it replayed... */
+  sample_id?: string
+  /** ...its true label (boxes: [x1, y1, x2, y2, class] per defect), and whether the alarm was right */
+  truth?: unknown
+  outcome?: Outcome
+  /** camera tasks: GET this for the image behind the prediction */
+  frame_url?: string
+}
+
+export type Outcome = 'caught' | 'missed' | 'false_alarm' | 'ok'
 
 export interface LiveTick {
   t: number

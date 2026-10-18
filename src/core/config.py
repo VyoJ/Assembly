@@ -37,6 +37,10 @@ class Settings(BaseSettings):
 
     device: Literal["auto", "cuda", "mps", "cpu"] = "auto"
 
+    # Deployed predictors in worker processes: "auto" = on macOS only (xgboost / lightgbm / torch each bring their
+    # own OpenMP there and crash or deadlock in one process); "on" / "off" to force
+    isolate_predictors: Literal["auto", "on", "off"] = "auto"
+
     # Where train.py runs (prepare.py and exploration snippets always run locally, next to the hidden labels)
     executor: Literal["local", "daytona"] = "local"
     daytona_api_key: str = ""

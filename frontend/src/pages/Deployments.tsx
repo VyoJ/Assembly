@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { AlertTriangle, Bell, BellOff, FlaskRound, Info, Play, Radio, Rocket, Send, Square } from 'lucide-react'
+import { AlertTriangle, Bell, BellOff, Camera, CheckCircle2, FlaskRound, Info, Play, Radio, Rocket, Send, Square } from 'lucide-react'
 import { api, ApiError, url } from '@/api/client'
 import { connectSse, type SseStatus } from '@/api/sse'
-import type { Deployment, LiveTick, Prediction } from '@/api/types'
+import type { Deployment, LiveTick, Outcome, Prediction } from '@/api/types'
 import { PageBody, PageHeader } from '@/components/Layout'
 import { StreamStatusBadge } from '@/components/status'
 import { Badge, Button, ButtonLink, Card, CardHeader, Label, Mono, Skeleton, inputClass } from '@/components/ui/primitives'
@@ -14,6 +14,7 @@ import { ChartTooltip } from '@/components/charts'
 import { axisProps, CHART } from '@/components/chartTheme'
 import { useApi } from '@/hooks/useApi'
 import { useHealth } from '@/hooks/health'
+import { isReplayFeed, liveRates, tallyOutcomes } from '@/lib/live'
 import { cn, fmt } from '@/lib/utils'
 
 // ---- prediction rendering
@@ -26,7 +27,7 @@ function headline(p: Prediction): { key: string; value: number } | undefined {
 
 function PredictionView({ taskId, p }: { taskId: string; p: Prediction }) {
   const h = headline(p)
-  const rest = Object.entries(p).filter(([k]) => !['alarm', 'latency_ms', h?.key].includes(k))
+  const rest = Object.entries(p).filter(([k]) => !['alarm', 'latency_ms', 'frame_url', 'outcome', h?.key].includes(k))
   return (
     <div className="rounded-lg border border-line bg-surface-2 p-3">
       <div className="flex items-center justify-between gap-2">
@@ -158,7 +159,66 @@ function InferenceTester({ dep }: { dep: Deployment }) {
   )
 }
 
-// ---- live simulator
+// ---- live feed
+
+const OUTCOME: Record<Outcome, { label: string; tone: 'ok' | 'bad' | 'warn' | 'neutral' }> = {
+  caught: { label: 'caught', tone: 'ok' },
+  ok: { label: 'correct, no alarm', tone: 'neutral' },
+  missed: { label: 'missed', tone: 'bad' },
+  false_alarm: { label: 'false alarm', tone: 'warn' },
+}
+
+function isBoxList(v: unknown): v is number[][] {
+  return Array.isArray(v) && v.every((b) => Array.isArray(b) && b.length >= 4 && b.slice(0, 4).every((x) => typeof x === 'number'))
+}
+
+/** The camera frame behind a live prediction, with predicted boxes (solid) and true boxes (dashed) on top. */
+function CameraFrame({ p }: { p: Prediction }) {
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null)
+  if (!p.frame_url) return null
+  const predicted = isBoxList(p.boxes) ? p.boxes : []
+  const truth = isBoxList(p.truth) ? p.truth : []
+  const color = p.alarm ? 'var(--color-bad)' : 'var(--color-ok)'
+  return (
+    <div className="relative mt-2 overflow-hidden rounded-md border border-line bg-black">
+      <img
+        src={url(p.frame_url)}
+        alt={`camera frame ${p.sample_id ?? ''}`}
+        className="block max-h-56 w-full object-contain"
+        onLoad={(e) => setSize({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
+      />
+      {size && (predicted.length > 0 || truth.length > 0) && (
+        <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox={`0 0 ${size.w} ${size.h}`} preserveAspectRatio="xMidYMid meet">
+          {truth.map((b, i) => (
+            <rect key={`t${i}`} x={b[0]} y={b[1]} width={b[2] - b[0]} height={b[3] - b[1]} fill="none" stroke="#e3a008" strokeWidth={Math.max(2, size.w / 250)} strokeDasharray="8 6" />
+          ))}
+          {predicted.map((b, i) => (
+            <g key={`p${i}`}>
+              <rect x={b[0]} y={b[1]} width={b[2] - b[0]} height={b[3] - b[1]} fill="none" stroke={color} strokeWidth={Math.max(2, size.w / 200)} />
+              {typeof b[4] === 'number' && (
+                <text x={b[0] + 4} y={Math.max(b[1] - 6, 16)} fill={color} fontSize={Math.max(14, size.w / 30)} fontFamily="monospace">
+                  {b[4].toFixed(2)}
+                </text>
+              )}
+            </g>
+          ))}
+        </svg>
+      )}
+      <div className="absolute bottom-1 left-1 flex gap-1.5">
+        {predicted.length > 0 && <span className="rounded bg-black/70 px-1.5 py-0.5 text-[10px] text-fg">{predicted.length} predicted</span>}
+        {truth.length > 0 && <span className="rounded bg-black/70 px-1.5 py-0.5 text-[10px] text-warn">{truth.length} true (dashed)</span>}
+      </div>
+    </div>
+  )
+}
+
+function truthText(p: Prediction): string | undefined {
+  if (p.truth === undefined || p.truth === null) return undefined
+  if (isBoxList(p.truth)) return p.truth.length ? `${p.truth.length} defect(s)` : 'no defect'
+  if (typeof p.truth === 'number') return fmt(p.truth)
+  return String(p.truth)
+}
+
 
 const MAX_TICKS = 120
 
@@ -187,10 +247,11 @@ function LiveSimulator({ dep }: { dep: Deployment }) {
   }, [running, hz, dep.id])
 
   const last = ticks.at(-1)
+  const replay = isReplayFeed(ticks)
   return (
     <Card>
       <CardHeader
-        title="Live simulator"
+        title={replay ? 'Live feed' : 'Live simulator'}
         icon={<Radio className="size-4" />}
         description={<>SSE <Mono>{dep.endpoint}/live</Mono></>}
         actions={
@@ -211,19 +272,30 @@ function LiveSimulator({ dep }: { dep: Deployment }) {
         }
       />
       <div className="space-y-4 p-4">
-        <Callout tone="warn" icon={<FlaskRound className="size-3.5" />} title="Simulated plant data">
-          Samples come from <Mono>plant/simulator.py</Mono>: a synthetic press that degrades, fails and is repaired, with generated sensor values.
-          This is not real industrial monitoring, and the alarm rate is not a validated KPI.
-        </Callout>
+        {replay ? (
+          <Callout tone="accent" icon={<CheckCircle2 className="size-3.5" />} title="Held-out test samples">
+            Each tick sends the next sample from the hidden test split (never seen in training) through the deployed model, and compares the alarm with
+            the true label: <b>caught</b>, <b>missed</b>, <b>false alarm</b> or correct with no alarm.
+          </Callout>
+        ) : (
+          ticks.length > 0 && (
+            <Callout tone="warn" icon={<FlaskRound className="size-3.5" />} title="Simulated plant data">
+              Samples come from <Mono>plant/simulator.py</Mono> (mock deployments): a synthetic press that degrades, fails and is repaired, with generated sensor
+              values. This is not real industrial monitoring, and the alarm rate is not a validated KPI.
+            </Callout>
+          )
+        )}
         {!running && !ticks.length ? (
-          <EmptyState title="Simulator stopped" description="Start it to stream simulated samples through every model in this deployment." />
+          <EmptyState title="Live feed stopped" description="Start it to stream samples through every model in this deployment: held-out test samples for real deployments, simulated plant data in mock mode." />
         ) : (
           <>
             {last && (
               <div className="flex flex-wrap gap-x-6 gap-y-2 text-xs text-fg-muted">
-                <span>
-                  simulated cycle <Mono className="text-fg">{last.cycle}</Mono>
-                </span>
+                {!replay && (
+                  <span>
+                    simulated cycle <Mono className="text-fg">{last.cycle}</Mono>
+                  </span>
+                )}
                 <span>
                   ticks <Mono className="text-fg">{Object.values(last.kpi_tracker)[0]?.ticks ?? ticks.length}</Mono>
                 </span>
@@ -231,10 +303,10 @@ function LiveSimulator({ dep }: { dep: Deployment }) {
             )}
             <div className="grid gap-4 lg:grid-cols-2">
               {dep.task_ids.map((tid) => {
-                const series = ticks.map((t) => {
+                const series = ticks.map((t, i) => {
                   const p = t.predictions[tid]
                   const h = p ? headline(p) : undefined
-                  return { cycle: t.cycle, t: t.t, value: h?.value, key: h?.key, alarm: !!p?.alarm }
+                  return { cycle: replay ? i + 1 : t.cycle, t: t.t, value: h?.value, key: h?.key, alarm: !!p?.alarm }
                 })
                 const key = series.find((s) => s.key)?.key
                 const tracker = last?.kpi_tracker[tid]
@@ -250,11 +322,18 @@ function LiveSimulator({ dep }: { dep: Deployment }) {
                         </Badge>
                       )}
                     </div>
-                    {tracker && (
+                    {tracker && !replay && (
                       <div className="mt-1 text-[11px] text-fg-subtle">
                         simulated alarm rate <span className="font-mono text-fg-muted">{(tracker.alarm_rate * 100).toFixed(1)}%</span> ({tracker.alarms}/{tracker.ticks})
                       </div>
                     )}
+                    {replay && <OutcomeSummary ticks={ticks} taskId={tid} last={lastP} />}
+                    {lastP?.frame_url && (
+                      <div className="mt-1 flex items-center gap-1.5 text-[11px] text-fg-subtle">
+                        <Camera className="size-3" /> sample <Mono className="text-fg-muted">{lastP.sample_id}</Mono>
+                      </div>
+                    )}
+                    {lastP && <CameraFrame p={lastP} />}
                     {key ? (
                       <div className="mt-2 h-36">
                         <ResponsiveContainer width="100%" height="100%">
@@ -266,7 +345,7 @@ function LiveSimulator({ dep }: { dep: Deployment }) {
                               content={({ active, payload }) => {
                                 const p = active && payload?.[0]?.payload
                                 if (!p) return null
-                                return <ChartTooltip title={`cycle ${p.cycle}`} rows={[{ label: key, value: p.value ?? '—' }, { label: 'alarm', value: p.alarm ? 'yes' : 'no' }]} />
+                                return <ChartTooltip title={replay ? `sample ${p.cycle}` : `cycle ${p.cycle}`} rows={[{ label: key, value: p.value ?? '—' }, { label: 'alarm', value: p.alarm ? 'yes' : 'no' }]} />
                               }}
                             />
                             <Line
@@ -286,7 +365,7 @@ function LiveSimulator({ dep }: { dep: Deployment }) {
                         </ResponsiveContainer>
                       </div>
                     ) : (
-                      lastP && <CodeBlock className="mt-2" maxHeight="max-h-36">{JSON.stringify(lastP, null, 2)}</CodeBlock>
+                      lastP && !lastP.frame_url && <CodeBlock className="mt-2" maxHeight="max-h-36">{JSON.stringify(lastP, null, 2)}</CodeBlock>
                     )}
                   </div>
                 )
@@ -296,6 +375,52 @@ function LiveSimulator({ dep }: { dep: Deployment }) {
         )}
       </div>
     </Card>
+  )
+}
+
+function OutcomeSummary({ ticks, taskId, last }: { ticks: LiveTick[]; taskId: string; last?: Prediction }) {
+  const tally = tallyOutcomes(ticks, taskId)
+  const rates = liveRates(tally)
+  const truth = last ? truthText(last) : undefined
+  return (
+    <div className="mt-2 space-y-1.5">
+      {last?.outcome && (
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-fg-subtle">
+          <Badge tone={OUTCOME[last.outcome].tone}>{OUTCOME[last.outcome].label}</Badge>
+          {truth !== undefined && (
+            <span>
+              truth <Mono className="text-fg-muted">{truth}</Mono>
+            </span>
+          )}
+        </div>
+      )}
+      {tally.total > 0 && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-fg-subtle">
+          <span>
+            caught <Mono className="text-ok">{tally.caught}</Mono>
+          </span>
+          <span>
+            missed <Mono className="text-bad">{tally.missed}</Mono>
+          </span>
+          <span>
+            false alarms <Mono className="text-warn">{tally.false_alarm}</Mono>
+          </span>
+          <span>
+            correct, no alarm <Mono className="text-fg-muted">{tally.ok}</Mono>
+          </span>
+          {rates.recall !== undefined && (
+            <span>
+              live recall <Mono className="text-fg">{(rates.recall * 100).toFixed(0)}%</Mono>
+            </span>
+          )}
+          {rates.falseAlarmRate !== undefined && (
+            <span>
+              live false-alarm rate <Mono className="text-fg">{(rates.falseAlarmRate * 100).toFixed(1)}%</Mono>
+            </span>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
