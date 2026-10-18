@@ -1,0 +1,18 @@
+{
+  "id": "nut_defect_boxes",
+  "name": "Metal nut defect localisation",
+  "rationale": "Showing the operator where the defect is on the part makes the reject decision fast and auditable.",
+  "framing": "Object detection: boxes around every defect region in a top-camera image; no box means a good part.",
+  "input_streams": ["line3.cam_top"],
+  "label_sources": ["qc_inspections"],
+  "target_definition": "one 'defect' box per connected region of the QC inspection's defect mask; none for good parts",
+  "prediction_format": "boxes",
+  "primary_metric": "map50",
+  "metrics": ["map50", "map50_95", "image_recall", "image_far", "p95_latency_ms"],
+  "kpis": [
+    {"metric": "image_recall", "op": ">=", "threshold": 0.8},
+    {"metric": "image_far", "op": "<=", "threshold": 0.15}
+  ],
+  "split_strategy": "random 60/20/20, stratified by defect type (one image per physical part)",
+  "time_budget_s": 600
+}

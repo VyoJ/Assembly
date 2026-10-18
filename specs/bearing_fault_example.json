@@ -1,0 +1,18 @@
+{
+  "id": "motor_bearing_fault",
+  "name": "Motor bearing fault diagnosis",
+  "rationale": "Knowing which bearing component is failing tells maintenance what to replace before the motor stops the line.",
+  "framing": "Classification: bearing condition (normal, inner race, ball, outer race) of a short vibration window from the drive-end accelerometer.",
+  "input_streams": ["motor4.vibration_drive_end"],
+  "label_sources": ["bearing_inspections"],
+  "target_definition": "fault label of the recording each window comes from",
+  "prediction_format": "class_probs",
+  "primary_metric": "macro_f1",
+  "metrics": ["accuracy", "macro_f1", "min_class_recall", "p95_latency_ms"],
+  "kpis": [
+    {"metric": "macro_f1", "op": ">=", "threshold": 0.9},
+    {"metric": "min_class_recall", "op": ">=", "threshold": 0.8}
+  ],
+  "split_strategy": "by motor load: train on 0-1 hp, validate on 2 hp, test on 3 hp (unseen operating conditions)",
+  "time_budget_s": 120
+}

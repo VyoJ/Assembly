@@ -1,0 +1,93 @@
+[project]
+name = "assembly"
+version = "0.1.0"
+description = "Autonomous AI engineer for intelligent factories"
+readme = "README.md"
+authors = [
+    { name = "Vyoman Jain", email = "75789232+VyoJ@users.noreply.github.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "daytona>=0.224.1",
+    "fastapi>=0.143.0",
+    "httpx>=0.28.1",
+    "langchain-core>=1.6.9",
+    "langchain-openai>=1.7.0",
+    "langgraph>=1.2.14",
+    "numpy>=2.5.4",
+    "pandas>=3.0.6",
+    "pydantic>=2.14.1",
+    "pydantic-settings>=2.15.0",
+    "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.3",
+    "sse-starlette>=3.5.0",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.4.0",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.17.0",
+]
+# Heavy ML stack: only needed on the AMD GPU box (`uv sync --group ml`).
+# Everything here is also what agent-written prepare.py / train.py may import.
+ml = [
+    "accelerate",
+    "huggingface-hub",
+    "joblib",
+    "lightgbm",
+    "matplotlib",
+    "onnx",
+    "onnxruntime",
+    "opencv-python-headless",
+    "optuna",
+    "pillow",
+    "pyarrow",
+    "pycocotools",
+    "scikit-learn",
+    "timm",
+    "torch",
+    "torchmetrics",
+    "torchvision",
+    "tqdm",
+    "transformers",
+    "triton-rocm>=3.8.0 ; sys_platform == 'linux'",
+    "ultralytics",
+    "xgboost",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/core", "src/api", "src/agent", "src/ml", "src/plant"]
+
+# Lock for the two platforms we actually use: Macs (mock mode) and the AMD box.
+[tool.uv]
+environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
+
+# ROCm wheels on the AMD box, default PyPI wheels on macOS.
+# Match the index to the box's ROCm version (`ls /opt/rocm*`); see https://pytorch.org.
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/rocm7.2"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-rocm", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-rocm", marker = "sys_platform == 'linux'" }]
+# ROCm torch depends on triton-rocm, which is only published on the ROCm index.
+triton-rocm = [{ index = "pytorch-rocm", marker = "sys_platform == 'linux'" }]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 110
