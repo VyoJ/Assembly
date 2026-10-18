@@ -54,6 +54,9 @@ prepare.py must:
   meta={"split": "group", ...}) - X a DataFrame of feature columns only (no ids, groups or labels), y one label
   per row. meta MUST declare the split: "group" (groups disjoint across splits) or "temporal" (with "time_col");
   the validators reject the dataset otherwise. Validator messages that mention meta.json mean this meta dict.
+- pandas is 3.x: text columns are PyArrow-backed `str`; use .to_numpy() (not .values) before scikit-learn / numpy
+  indexing; select numeric columns explicitly before groupby/rolling; no chained assignment (see the API notes
+  in recipes INDEX.md)
 - build feature columns as a dict / list of Series and add them with ONE pd.concat(axis=1), not one df[col] = ...
   at a time (that is slow and fragments the frame); prefer groupby(...).rolling / shift over transform(lambda)
 - be deterministic (fixed seeds) and reasonably fast

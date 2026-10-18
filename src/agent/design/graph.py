@@ -14,6 +14,15 @@ from ml import api as ml_api
 from ml import workspace as ws_files
 
 
+def _versions() -> str:
+    """Installed versions of what prepare.py typically uses: APIs differ between major versions."""
+    from ml.workspace import installed_packages
+
+    pkgs = installed_packages()
+    have = [f"{p}=={pkgs[p]}" for p in ("pandas", "numpy", "scikit-learn", "scipy", "pillow") if p in pkgs]
+    return f"\n\nInstalled (write code for THESE versions): {', '.join(have)}" if have else ""
+
+
 async def write_prepare(state: DesignState) -> dict:
     ws, run_id = state["ws"], state["run_id"]
     report = state.get("report")
@@ -27,7 +36,8 @@ async def write_prepare(state: DesignState) -> dict:
     fixing = bool(state.get("code") and report and not report.ok)
     bus.emit(run_id, "design_attempt", task_id=ws.task_id, attempt=state.get("attempts", 0) + 1)
     reply = await llm.text(
-        llm.messages(prompts.PREPARE_SYSTEM, prompts.PREPARE_USER.format(spec=ws.spec.model_dump_json(indent=2), feedback=feedback)),
+        llm.messages(prompts.PREPARE_SYSTEM + _versions(),
+                     prompts.PREPARE_USER.format(spec=ws.spec.model_dump_json(indent=2), feedback=feedback)),
         mock=lambda: mock_llm.prepare(ws.spec, feedback if report else ""),
         tools=design_tools(ws),
         # first attempt explores the raw streams; a validation fix is a targeted edit of the previous code

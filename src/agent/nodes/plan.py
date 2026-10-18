@@ -85,8 +85,10 @@ async def discover(state: OuterState) -> dict:
     by_id = {s.id: s for s in streams}
 
     async def one(t: TaskSpec) -> tuple[TaskSpec, list]:
-        visual = any(by_id[s].modality in ("image", "video") for s in t.input_streams if s in by_id)
-        candidates = [s for s in streams if (s.modality in ("image", "video")) == visual]
+        # only streams of the same data kind as the formulated ones: a sensor-table task must not pick up another
+        # machine's recordings (they can't be joined on entity x time) or camera images, and vice versa
+        kinds = {ml_api.stream_kind(s) for s in t.input_streams if s in by_id}
+        candidates = [s for s in streams if ml_api.stream_kind(s.id) in kinds] if kinds else list(streams)
         profiles = await asyncio.to_thread(ml_api.profile_streams, t, candidates)
         kept = [p.stream_id for p in profiles if p.keep]
         bus.emit(run_id, "discovery", task_id=t.id, scanned=len(candidates), kept=len(kept),

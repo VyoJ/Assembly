@@ -2,8 +2,8 @@
 """Hand-written prepare.py for specs/metal_nut_example.json (reference for the agent and the tests).
 
 One image per part: a random split stratified by defect type is safe (validators allow split="random" only for
-standalone image files). The camera index's `source_split` column is NOT used: in the source data the training
-folder holds only good parts, so it would leak the label.
+standalone image files). Don't split on the source dataset's own train/test folders: in MVTec the training folder holds only good parts,
+so that split would leak the label (the catalog doesn't expose it).
 """
 
 import harness

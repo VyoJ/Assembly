@@ -22,7 +22,14 @@ borrow what helps. They use only the `harness.py` API described in `program.md`.
 - `threshold_calibration.py`: choose the alarm threshold from the KPIs (max recall under a false-alarm
   cap), and how to shift a scalar prediction for early-warning KPIs.
 
-## API notes for the installed versions (xgboost 3.x, lightgbm 4.x, scikit-learn 1.9)
+## API notes for the installed versions (pandas 3.x, xgboost 3.x, lightgbm 4.x, scikit-learn 1.9)
+- pandas 3: text columns are the `str` dtype (PyArrow-backed). `df[col].values` is then an `ArrowStringArray`,
+  NOT a numpy array: scikit-learn (`train_test_split`, `GroupShuffleSplit`...) and numpy fancy indexing fail on it
+  ("only integer scalar arrays can be converted to a scalar index"). Use `df[col].to_numpy()` (or
+  `.to_numpy(dtype=object)` for strings). Copy-on-write is always on: never assign through a chained index
+  (`df[mask][col] = ...`); use `df.loc[mask, col] = ...`. Before `groupby(...).rolling(...)` / `.mean()` on a frame,
+  select the numeric feature columns explicitly (ids and text columns make it fail: "No numeric types to
+  aggregate").
 - XGBoost: `early_stopping_rounds`, `eval_metric` and `callbacks` go in the CONSTRUCTOR
   (`xgb.XGBRegressor(n_estimators=2000, early_stopping_rounds=50)`), not in `fit()`; `fit(X, y, eval_set=[(Xv, yv)],
   verbose=False)`. A model built with `early_stopping_rounds` needs an `eval_set` every time it is fit: to refit on

@@ -89,3 +89,14 @@ def test_image_stream_and_annotations(fake_mvtec):
     assert ann.loc[ann["defective"], "mask_path"].notna().all()
     assert ann.loc[~ann["defective"], "mask_path"].isna().all()
     assert "6 images" in catalog.peek_stream("line3.cam_top")
+
+
+def test_read_streams_refuses_mixed_kinds(monkeypatch):
+    import pytest
+
+    from ml import catalog
+
+    kinds = {"a": "table", "b": "signal"}
+    monkeypatch.setattr(catalog, "stream_kind", lambda s: kinds[s])
+    with pytest.raises(ValueError, match="can't join different kinds"):
+        catalog.read_streams(["a", "b"])

@@ -168,13 +168,12 @@ def _image_index(source_id: str, cfg: dict) -> pd.DataFrame:
     # The fixed shuffle is both the neutral id and the replay order of the live camera feed (mixes good and
     # defective parts). Folder names (= labels) only come back through read_labels.
     for i, p in zip(_neutral_order(len(files)), files, strict=True):
-        rel = p.relative_to(root).parts
         rows.append({
             "record_id": f"{source_id}/img{i:05d}",
             "entity": cfg.get("entity", source_id),
             "frame_idx": int(i),
             "path": str(p),
-            "source_split": rel[0] if cfg.get("layout") == "mvtec" else None,
+            # no source split column: MVTec's train folder holds only good parts, so it would leak the label
         })
     return pd.DataFrame(rows).sort_values("frame_idx").reset_index(drop=True)
 
@@ -252,9 +251,24 @@ def read_stream(stream_id: str) -> pd.DataFrame:
     raise ValueError(f"unknown source kind '{kind}' for '{stream_id}'")
 
 
+def stream_kind(stream_id: str) -> str:
+    """'table' (time series on an entity x time grid; synthetic streams live on that grid too) or the record kind
+    of the stream's source ('signal', 'image_folder', 'video', ...)."""
+    _, cfg, _ = _resolve(stream_id)
+    kind = cfg.get("kind", "table")
+    return "table" if kind in ("table", "synthetic") else kind
+
+
 def read_streams(stream_ids: list[str]) -> pd.DataFrame:
     """Several table streams joined on (entity, time) into one wide table.
-    Record streams (signal / image) are stacked, one block per stream."""
+    Record streams (signal / image) of one kind are stacked, one block per stream. Mixing kinds is an error."""
+    kinds = {s: stream_kind(s) for s in stream_ids}
+    if len(set(kinds.values())) > 1:
+        tables = [s for s, k in kinds.items() if k == "table"]
+        others = {s: k for s, k in kinds.items() if k != "table"}
+        raise ValueError(f"read_streams can't join different kinds of streams: table streams {tables[:5]}... and "
+                         f"{others}. Read record streams (recordings, images) separately with read_stream(id), "
+                         "or leave them out if they belong to another machine.")
     frames = [read_stream(s) for s in stream_ids]
     if all(set(TABLE_KEYS) <= set(f.columns) and "record_id" not in f for f in frames):
         df = frames[0]

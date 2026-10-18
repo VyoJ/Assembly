@@ -1,8 +1,8 @@
 """Hand-written prepare.py for specs/metal_nut_boxes_example.json (reference for the agent and the tests).
 
 Boxes come from the QC inspection's pixel masks: one box per connected defect region, class 0 ("defect").
-Same stratified random split as metal_nut_example (one image per physical part); `source_split` is not used
-because the source's training folder only holds good parts.
+Same stratified random split as metal_nut_example (one image per physical part); the source dataset's own
+train/test folders are not used because its training folder only holds good parts (label leak).
 """
 
 import harness

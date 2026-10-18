@@ -31,6 +31,11 @@ def peek_stream(stream_id: str, n: int = 5) -> str:
     return mock.peek_stream(stream_id, n) if settings.ml_mock else catalog.peek_stream(stream_id, n)
 
 
+def stream_kind(stream_id: str) -> str:
+    """'table' or the record kind ('signal', 'image_folder', ...) of a stream's source (from the catalog config)."""
+    return catalog.stream_kind(stream_id)
+
+
 def peek_labels(label_source_id: str, n: int = 5) -> str:
     return mock.peek_stream(label_source_id, n) if settings.ml_mock else catalog.peek_labels(label_source_id, n)
 
