@@ -477,7 +477,7 @@ export function DeploymentsPage() {
       <PageHeader title="Deployments" description="Models packaged and registered by completed runs. Deployments from earlier API processes are listed as stopped and load on first use." />
       <PageBody>
         {deps.loading && !deps.data ? (
-          <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
             <Skeleton className="h-40" />
             <Skeleton className="h-96" />
           </div>
@@ -495,7 +495,7 @@ export function DeploymentsPage() {
             />
           </Card>
         ) : (
-          <div className="grid gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
             <Card className="self-start overflow-hidden">
               <div className="divide-y divide-line">
                 {list.map((d) => (

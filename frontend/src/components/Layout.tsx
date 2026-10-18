@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router'
-import { Boxes, Database, LayoutDashboard, Loader2, Menu, Plus, Rocket, X } from 'lucide-react'
+import { Boxes, Database, Info, LayoutDashboard, Loader2, Menu, Plus, Rocket, X } from 'lucide-react'
 import { useHealth } from '@/hooks/health'
+import { openWelcome, WelcomeDialog } from './WelcomeDialog'
 import { cn } from '@/lib/utils'
 import { Badge } from './ui/primitives'
 
@@ -76,6 +77,16 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
           {label}
         </NavLink>
       ))}
+      <button
+        onClick={() => {
+          onNavigate?.()
+          openWelcome()
+        }}
+        className="flex w-full items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+      >
+        <Info className="size-4" />
+        About this demo
+      </button>
     </nav>
   )
 }
@@ -142,6 +153,7 @@ export function Layout() {
         </div>
       )}
 
+      <WelcomeDialog />
       <main className="min-w-0">
         {waking && (
           <div
