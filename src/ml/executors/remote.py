@@ -4,9 +4,12 @@ A provider subclasses RemoteExecutor and implements five primitives on an opaque
     _create_box(ws, label) -> box        _upload(box, data, path)        _download(box, path) -> bytes
     _exec(box, command, timeout_s) -> (rc, output)                       _exec_stream(box, command, timeout_s, on_text) -> rc | None
     _destroy(box)
-Everything else lives here: one box per task workspace, syncing the code (src/core + src/ml) and the workspace INPUTS
-(harness.py, task.json, program.md, data/ - hidden val/test labels live outside the workspace and are never sent),
-running with the same env contract as local runs, and copying run_dir back so scoring stays local.
+Everything else lives here: ONE box per pipeline run, shared by its tasks (each task has its own directory and runs
+its own commands, in parallel), so a run needs one box's resources however many tasks it has (e.g. Daytona's free
+tier caps total memory at 10 GiB); syncing the code (src/core + src/ml) once per box and each task's workspace
+INPUTS (harness.py, task.json, program.md, data/ - hidden val/test labels live outside the workspace and are never
+sent) on its first run; the same env contract as local runs; copying run_dir back so scoring stays local; and
+falling back to a local run when the provider is out of capacity (a limit is not a code problem).
 """
 
 import hashlib
@@ -69,7 +72,8 @@ class RemoteExecutor:
     cpu_threads: int | None = None  # the box's real CPU allowance (containers often report the host's cores)
 
     def __init__(self) -> None:
-        self._boxes: dict[tuple[str, str], object] = {}
+        self._boxes: dict[str, object] = {}  # run_id -> box
+        self._tasks: dict[str, set[str]] = {}  # run_id -> task_ids synced into (and still using) the box
         self._lock = threading.Lock()
         self._code_tar: bytes | None = None
 
@@ -92,6 +96,10 @@ class RemoteExecutor:
     def _destroy(self, box) -> None:
         raise NotImplementedError
 
+    def _is_capacity_error(self, error: Exception) -> bool:
+        """True if box creation failed because the account is at its limit (then the run falls back to local)."""
+        return False
+
     # ------------------------------------------------------------ shared logic
     def _ws_dir(self, ws: Workspace) -> str:
         return f"{self.remote_root}/runs/{ws.run_id}/{ws.task_id}"
@@ -108,33 +116,38 @@ class RemoteExecutor:
         self._check(box, f"mkdir -p {shlex.quote(dest)} && tar xzf {tmp} -C {shlex.quote(dest)} && rm -f {tmp}", what)
 
     def _box(self, ws: Workspace):
-        """The task's box, created and synced on first use (one per workspace, reused across experiments)."""
-        key = (ws.run_id, ws.task_id)
+        """The run's box (created on first use, shared by all its tasks) with this task's workspace synced."""
         with self._lock:
-            if key in self._boxes:
-                return self._boxes[key]
-            box = self._create_box(ws, f"{ws.run_id}-{ws.task_id}")
-            try:
-                self._sync(box, ws)
-            except Exception:
-                self._destroy(box)
-                raise
-            self._boxes[key] = box
+            box = self._boxes.get(ws.run_id)
+            if box is None:
+                box = self._create_box(ws, ws.run_id)
+                try:
+                    self._sync_box(box)
+                except Exception:
+                    self._destroy(box)
+                    raise
+                self._boxes[ws.run_id], self._tasks[ws.run_id] = box, set()
+            if ws.task_id not in self._tasks[ws.run_id]:
+                self._sync_workspace(box, ws)
+                self._tasks[ws.run_id].add(ws.task_id)
             return box
 
-    def _sync(self, box, ws: Workspace) -> None:
-        # File inputs (images, recordings) work too: write_dataset copies them into data/files/<split>/ with
-        # RELATIVE paths, and harness resolves them against the box's own data dir.
+    def _sync_box(self, box) -> None:
+        """Once per box: the code (src/core + src/ml) and the pretrained weights."""
         if self._code_tar is None:
             self._code_tar = _tar([(SRC / "core", "core"), (SRC / "ml", "ml")])
         self._put_tar(box, self._code_tar, f"{self.remote_root}/src", "code sync")
-        wsp = Path(ws.path)
-        self._put_tar(box, _tar([(wsp / n, n) for n in WORKSPACE_INPUTS]), self._ws_dir(ws), "workspace sync")
         weights = settings.data_dir / "weights"
         if weights.is_dir():
             size_mb = sum(f.stat().st_size for f in weights.rglob("*") if f.is_file()) / 1e6
             if size_mb <= MAX_WEIGHTS_MB:
                 self._put_tar(box, _tar([(weights, "weights")]), self.remote_root, "weights sync")
+
+    def _sync_workspace(self, box, ws: Workspace) -> None:
+        """Once per task: its workspace inputs. File inputs (images, recordings) work too: write_dataset copies them
+        into data/files/<split>/ with RELATIVE paths, and harness resolves them against the box's own data dir."""
+        wsp = Path(ws.path)
+        self._put_tar(box, _tar([(wsp / n, n) for n in WORKSPACE_INPUTS]), self._ws_dir(ws), "workspace sync")
 
     def _remote_env(self, ws: Workspace, run: str, budget_s: float) -> dict[str, str]:
         wsd = self._ws_dir(ws)
@@ -155,7 +168,15 @@ class RemoteExecutor:
     def run(self, ws: Workspace, run_dir: Path, *, env: dict[str, str], budget_s: float, timeout_s: float,
             sink: LineSink) -> tuple[int | None, float]:
         t0 = time.monotonic()
-        box = self._box(ws)
+        try:
+            box = self._box(ws)
+        except Exception as e:
+            if not self._is_capacity_error(e):
+                raise
+            from ml.executors.local import LocalExecutor
+
+            sink.line(f"[{self.name}] no capacity ({str(e).splitlines()[0][:200]}); running {run_dir.name} locally")
+            return LocalExecutor().run(ws, run_dir, env=env, budget_s=budget_s, timeout_s=timeout_s, sink=sink)
         wsd, run = self._ws_dir(ws), run_dir.name
         self._check(box, f"rm -rf {shlex.quote(f'{wsd}/{run}')} && mkdir -p {shlex.quote(f'{wsd}/{run}')}", "run dir")
         self._upload(box, (run_dir / "train.py").read_bytes(), f"{wsd}/{run}/train.py")
@@ -174,7 +195,7 @@ class RemoteExecutor:
     def _fetch(self, box, ws: Workspace, run_dir: Path) -> None:
         """Copy everything train.py wrote in the remote run dir back into run_dir (even after a crash)."""
         wsd, run = self._ws_dir(ws), run_dir.name
-        tmp = f"/tmp/assembly_out_{run}.tgz"
+        tmp = f"/tmp/assembly_out_{ws.task_id}_{run}.tgz"  # tasks share the box: names must not collide
         rc, _ = self._exec(box, f"tar czf {tmp} -C {shlex.quote(wsd)} {shlex.quote(run)}")
         if rc != 0:
             return
@@ -185,7 +206,14 @@ class RemoteExecutor:
         self._exec(box, f"rm -f {tmp}")
 
     def release(self, ws: Workspace) -> None:
+        """This task is done with the box; the box is destroyed when the run's last task releases it."""
         with self._lock:
-            box = self._boxes.pop((ws.run_id, ws.task_id), None)
-        if box is not None:
-            self._destroy(box)
+            tasks = self._tasks.get(ws.run_id)
+            if tasks is None:
+                return
+            tasks.discard(ws.task_id)
+            if tasks:
+                return
+            box = self._boxes.pop(ws.run_id)
+            del self._tasks[ws.run_id]
+        self._destroy(box)

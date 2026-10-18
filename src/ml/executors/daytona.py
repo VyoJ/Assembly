@@ -69,13 +69,17 @@ class DaytonaExecutor(RemoteExecutor):
 
         sandbox = self.client.create(CreateSandboxFromSnapshotParams(
             snapshot=self.ensure_snapshot(),
-            labels={"app": "assembly", "run": ws.run_id, "task": ws.task_id},
+            labels={"app": "assembly", "run": ws.run_id},  # one box per run, shared by its tasks
             auto_stop_interval=settings.daytona_auto_stop_min,
             auto_delete_interval=settings.daytona_auto_delete_min,
             network_block_all=True,
         ), timeout=300)
         self.remote_root = f"{sandbox.get_user_home_dir().rstrip('/')}/assembly"
         return sandbox
+
+    def _is_capacity_error(self, error: Exception) -> bool:
+        text = str(error).lower()
+        return "limit exceeded" in text or "quota" in text or "no available runners" in text
 
     def _upload(self, box, data: bytes, path: str) -> None:
         box.fs.upload_file(data, path)
